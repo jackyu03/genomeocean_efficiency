@@ -1,36 +1,13 @@
-
 #!/usr/bin/env python3
-"""
-go_benchmark.py — GPU-agnostic GenomeOcean baseline benchmark
+# (original content omitted for brevity in this cell; we will reconstruct minimal needed parts)
+# To keep this concise, we will write the fully patched version directly.
 
-Usage (example):
-  python go_benchmark.py \
-    --csv /path/to/gtdb.csv \
-    --model DOEJGI/GenomeOcean-100M \
-    --device cuda \
-    --precision float16 \
-    --samples-per-bin 1000 \
-    --bins 1000 5000 10000 50000 \
-    --batch-sizes 1 4 8 16 \
-    --warmup 3 \
-    --outdir ./results
+from textwrap import dedent as _dedent
 
-Expected CSV columns: genome_id, seq  (seq capped at ~50k bp as you described)
-"""
-
-import os
-import sys
-import csv
-import time
-import math
-import json
-import argparse
-import threading
-import queue
-from datetime import datetime
+import os, sys, csv, time, math, json, argparse, threading
 from typing import List, Tuple, Dict
+from datetime import datetime
 
-# Third-party (install as needed): torch, transformers, pandas, numpy, pynvml, tqdm
 import numpy as np
 import pandas as pd
 
@@ -45,10 +22,6 @@ except Exception:
 
 from transformers import AutoTokenizer, AutoModel, AutoConfig
 
-# -----------------------------
-# Logging utils
-# -----------------------------
-
 import logging
 logging.basicConfig(
     level=logging.INFO,
@@ -59,15 +32,7 @@ logging.basicConfig(
 log = logging.getLogger("go_bench")
 
 
-# -----------------------------
-# NVML energy meter
-# -----------------------------
-
 class EnergyMeter:
-    """
-    Context manager that samples GPU power (mW) at a fixed interval
-    and integrates to energy (kWh). Works best on NVIDIA GPUs with NVML.
-    """
     def __init__(self, gpu_index: int = 0, interval_s: float = 0.05):
         self.gpu_index = gpu_index
         self.interval = interval_s
@@ -81,7 +46,7 @@ class EnergyMeter:
         handle = pynvml.nvmlDeviceGetHandleByIndex(self.gpu_index)
         while not self._stop.is_set():
             try:
-                p_mw = pynvml.nvmlDeviceGetPowerUsage(handle)  # milliwatts
+                p_mw = pynvml.nvmlDeviceGetPowerUsage(handle)
             except Exception:
                 p_mw = 0
             ts = time.perf_counter()
@@ -107,89 +72,82 @@ class EnergyMeter:
                 pynvml.nvmlShutdown()
             except Exception:
                 pass
-            # integrate energy via trapezoidal rule (power in W, time in s) → Joules → kWh
             if len(self.samples) >= 2:
                 joules = 0.0
                 for (t0, p0_mw), (t1, p1_mw) in zip(self.samples, self.samples[1:]):
                     dt = (t1 - t0)
-                    p0 = p0_mw / 1000.0  # W
-                    p1 = p1_mw / 1000.0  # W
+                    p0 = p0_mw / 1000.0
+                    p1 = p1_mw / 1000.0
                     joules += 0.5 * (p0 + p1) * dt
-                self.kwh = joules / 3_600_000.0  # 1 kWh = 3.6e6 Joules
+                self.kwh = joules / 3_600_000.0
             else:
                 self.kwh = None
 
 
-# -----------------------------
-# FLOPs per sequence (analytical)
-# -----------------------------
-
 def flops_per_seq_decoder(L:int, d:int, T:int, d_ff:int=None) -> float:
-    """
-    Analytical forward FLOPs for a decoder-only transformer pass on length T.
-    Assumes full attention (no cache) and standard MLP with expansion m = d_ff/d.
-
-    FLOPs_seq ≈ L * [ (4 + 4m) * T * d^2 + 2 * T^2 * d ]
-
-    Returns: FLOPs (not TFLOPs) as a float
-    """
     if d_ff is None:
-        # fallback m ≈ 4
         m = 4.0
     else:
         m = float(d_ff) / float(d)
-
     term_proj = (4.0 + 4.0*m) * T * (d**2)
     term_attn = 2.0 * (T**2) * d
     flops = L * (term_proj + term_attn)
     return float(flops)
 
 
-# -----------------------------
-# Tokenization helper (DNA → tokens len)
-# -----------------------------
-
-def tokenize_lengths(tokenizer, seqs: List[str], batch_size: int = 128) -> List[int]:
+def tokenize_lengths(tokenizer, seqs: List[str], batch_size: int = 128, max_len: int | None = None) -> List[int]:
     lens = []
     for i in range(0, len(seqs), batch_size):
         batch = seqs[i:i+batch_size]
         enc = tokenizer(
             batch,
             padding=False,
-            truncation=False,
+            truncation=(max_len is not None),
+            max_length=max_len if (max_len is not None) else None,
             add_special_tokens=True,
             return_attention_mask=False,
             return_length=True
         )
-        # HF returns 'length' as number of tokens *including* special tokens
-        # We use that directly as T
         lens.extend([int(x) for x in enc["length"]])
     return lens
 
 
-# -----------------------------
-# Binning by token length
-# -----------------------------
+@torch.no_grad()
+def embed_batch(model: nn.Module, tokenizer, seqs: List[str], device: str, max_len: int | None = None) -> torch.Tensor:
+    inputs = tokenizer(
+        seqs,
+        padding=True,
+        truncation=True,
+        max_length=max_len if (max_len is not None) else None,
+        return_tensors="pt",
+        add_special_tokens=True,
+    )
+    inputs = {k: v.to(device) for k, v in inputs.items() if isinstance(v, torch.Tensor)}
+    inputs.pop('token_type_ids', None)
+    outputs = model(**inputs, output_hidden_states=True, return_dict=True)
+    if hasattr(outputs, "last_hidden_state"):
+        hs = outputs.last_hidden_state
+    elif hasattr(outputs, "hidden_states"):
+        hs = outputs.hidden_states[-1]
+    else:
+        raise RuntimeError("Model output missing hidden states")
+    emb = hs.mean(dim=1)
+    return emb
+
 
 def make_bins_by_bp(df: pd.DataFrame, bins_bp: List[int], max_per_bin: int,
-                    tokenizer, sample_seed: int = 42) -> Dict[int, pd.DataFrame]:
-    """
-    bins_bp: list of approximate bp targets (e.g., [1000, 5000, 10000, 50000])
-    We compute token lengths, then create bins by nearest bp target.
-    """
-    # Estimate bp per token by sampling a small subset
+                    tokenizer, sample_seed: int = 42, max_len: int | None = None) -> Dict[int, pd.DataFrame]:
     samp = df.sample(min(len(df), 1000), random_state=sample_seed)
-    samp_tokens = tokenize_lengths(tokenizer, samp["seq"].tolist(), batch_size=64)
+    samp_tokens = tokenize_lengths(tokenizer, samp["seq"].tolist(), batch_size=64, max_len=max_len)
+    # bp per token estimate (may be truncated if max_len enforced; still useful)
     mean_bp_per_token = np.mean([len(s)/max(t,1) for s, t in zip(samp["seq"], samp_tokens)])
 
     log.info(f"Estimated ~{mean_bp_per_token:.2f} bp / token (from 1k-sample).")
-    # Now compute tokens for all (may be large; chunked)
-    lens_tokens = tokenize_lengths(tokenizer, df["seq"].tolist(), batch_size=128)
+    lens_tokens = tokenize_lengths(tokenizer, df["seq"].tolist(), batch_size=128, max_len=max_len)
     df = df.copy()
     df["len_tokens"] = lens_tokens
     df["len_bp"] = df["seq"].str.len()
 
-    # Assign each row to closest target bin by bp length
     bins_map = {b: [] for b in bins_bp}
     for idx, row in df.iterrows():
         bp = row["len_bp"]
@@ -211,37 +169,7 @@ def make_bins_by_bp(df: pd.DataFrame, bins_bp: List[int], max_per_bin: int,
     return out
 
 
-# -----------------------------
-# Inference pass to get embeddings
-# -----------------------------
-
-@torch.no_grad()
-def embed_batch(model: nn.Module, tokenizer, seqs: List[str], device: str) -> torch.Tensor:
-    """
-    Forward pass to obtain a pooled embedding per sequence.
-    We take last hidden states and mean-pool across tokens.
-    """
-    inputs = tokenizer(
-        seqs, padding=True, truncation=True, return_tensors="pt", add_special_tokens=True
-    )
-    inputs = {k: v.to(device) for k, v in inputs.items() if isinstance(v, torch.Tensor)}
-    outputs = model(**inputs, output_hidden_states=True, return_dict=True)
-    if hasattr(outputs, "last_hidden_state"):
-        hs = outputs.last_hidden_state  # [B, T, d]
-    elif hasattr(outputs, "hidden_states"):
-        hs = outputs.hidden_states[-1]
-    else:
-        raise RuntimeError("Model output missing hidden states")
-    emb = hs.mean(dim=1)  # [B, d]
-    return emb
-
-
-# -----------------------------
-# Benchmark loop
-# -----------------------------
-
 def run_benchmark(args):
-    # Env and seed hygiene
     torch.set_grad_enabled(False)
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.benchmark = False
@@ -249,21 +177,15 @@ def run_benchmark(args):
     np.random.seed(1234)
 
     device = args.device
-    dtype_map = {
-        "float16": torch.float16,
-        "bfloat16": torch.bfloat16,
-        "float32": torch.float32,
-    }
+    dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
     dtype = dtype_map[args.precision]
 
-    # Load data
     log.info(f"Loading CSV: {args.csv}")
     df = pd.read_csv(args.csv)
     if not {"genome_id", "seq"}.issubset(df.columns):
         raise ValueError("CSV must contain columns: genome_id, seq")
     log.info(f"Loaded {len(df):,} sequences.")
 
-    # Load tokenizer & model
     log.info(f"Loading tokenizer: {args.model}")
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
 
@@ -277,18 +199,28 @@ def run_benchmark(args):
     )
     model.eval()
 
-    # Report model config excerpt
+    # Determine max token length
+    max_len = getattr(config, "max_position_embeddings", None)
+    if (max_len is None) or (isinstance(max_len, int) and max_len <= 0):
+        tml = getattr(tokenizer, "model_max_length", None)
+        if isinstance(tml, int) and tml < 10_000_000:
+            max_len = tml
+        else:
+            max_len = None
+    if max_len is not None:
+        log.info(f"Using max_length={max_len} tokens for truncation.")
+    else:
+        log.warning("No max_length found; proceeding without enforced truncation (may be unsafe for long inputs).")
+
     n_params = sum(p.numel() for p in model.parameters())
     d_model = getattr(config, "hidden_size", None) or getattr(config, "n_embd", None)
     n_layer = getattr(config, "num_hidden_layers", None) or getattr(config, "n_layer", None)
     d_ff = getattr(config, "intermediate_size", None)
     log.info(f"Model loaded: params={n_params/1e6:.1f}M, hidden={d_model}, layers={n_layer}, d_ff={d_ff}, dtype={dtype}, device={device}")
 
-    # Make bins
     bins_bp = [int(x) for x in args.bins]
-    bins = make_bins_by_bp(df, bins_bp, args.samples_per_bin, tokenizer, sample_seed=42)
+    bins = make_bins_by_bp(df, bins_bp, args.samples_per_bin, tokenizer, sample_seed=42, max_len=max_len)
 
-    # Prepare output
     os.makedirs(args.outdir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_csv = os.path.join(args.outdir, f"benchmark_{timestamp}.csv")
@@ -299,7 +231,6 @@ def run_benchmark(args):
         "peak_vram_GB","energy_kWh","flops_per_seq","TFLOPs_per_s"
     ]
 
-    # System info
     commit = os.environ.get("GIT_COMMIT", "")
     gpu_name = driver = cuda = ""
     if torch.cuda.is_available() and device == "cuda":
@@ -307,7 +238,6 @@ def run_benchmark(args):
         driver = os.popen("nvidia-smi --query-gpu=driver_version --format=csv,noheader").read().strip() or ""
         cuda = torch.version.cuda or ""
 
-    # CSV writer
     f_out = open(out_csv, "w", newline="")
     writer = csv.DictWriter(f_out, fieldnames=fieldnames)
     writer.writeheader()
@@ -319,34 +249,29 @@ def run_benchmark(args):
             mean_tokens = int(np.mean(lens_tokens))
             mean_bp = int(sub["len_bp"].mean())
 
-            # FLOPs per seq (analytical) for mean token length
             if (n_layer is not None) and (d_model is not None):
                 flops_seq = flops_per_seq_decoder(n_layer, d_model, mean_tokens, d_ff)
             else:
                 flops_seq = float("nan")
 
-            # Build batches
-            # Shuffle for fairness
             idx = np.arange(len(seqs))
             np.random.shuffle(idx)
             seqs = [seqs[i] for i in idx]
 
             for bs in args.batch_sizes:
-                # warmup
                 warm = max(0, args.warmup)
                 log.info(f"[Bin ~{bin_bp} bp | mean tokens ~{mean_tokens} | BS={bs}] Warmup x{warm} ...")
                 for _ in range(warm):
                     sample = seqs[:bs]
-                    _ = embed_batch(model, tokenizer, sample, device=device)
-                    torch.cuda.synchronize() if device == "cuda" else None
+                    _ = embed_batch(model, tokenizer, sample, device=device, max_len=max_len)
+                    if device == "cuda":
+                        torch.cuda.synchronize()
 
-                # timed runs
                 n_runs = max(1, math.floor(len(seqs) / bs))
                 if args.max_batches is not None:
                     n_runs = min(n_runs, args.max_batches)
                 log.info(f"[Bin ~{bin_bp} bp | BS={bs}] Timed runs: {n_runs}")
 
-                # Reset peak memory
                 if device == "cuda":
                     torch.cuda.reset_peak_memory_stats()
 
@@ -356,13 +281,10 @@ def run_benchmark(args):
                     n_seqs_total = 0
                     for i in range(n_runs):
                         batch = seqs[i*bs:(i+1)*bs]
-                        t0 = time.perf_counter()
-                        _ = embed_batch(model, tokenizer, batch, device=device)
+                        _ = embed_batch(model, tokenizer, batch, device=device, max_len=max_len)
                         if device == "cuda":
                             torch.cuda.synchronize()
-                        t1 = time.perf_counter()
-                        # accumulate counts
-                        toks = tokenize_lengths(tokenizer, batch, batch_size=bs)
+                        toks = tokenize_lengths(tokenizer, batch, batch_size=bs, max_len=max_len)
                         n_tokens_total += sum(toks)
                         n_seqs_total += len(batch)
                 end = time.perf_counter()
@@ -377,7 +299,6 @@ def run_benchmark(args):
                 if device == "cuda":
                     peak_vram_gb = torch.cuda.max_memory_reserved() / 1e9
 
-                # TFLOPs/s based on analytical FLOPs per seq × seqs/s
                 if not math.isnan(flops_seq):
                     tflops_per_s = (flops_seq * seqs_per_s) / 1e12
                 else:
@@ -408,15 +329,13 @@ def run_benchmark(args):
                 writer.writerow(row)
                 f_out.flush()
                 log.info(
-                    f"[RESULT] bin~{bin_bp}bp, BS={bs} | "
-                    f"E2EL={row['E2EL_ms']} ms | seq/s={row['seqs_per_s']} | tok/s={row['tokens_per_s']} | "
+                    f"[RESULT] bin~{bin_bp}bp, BS={bs} | E2EL={row['E2EL_ms']} ms | seq/s={row['seqs_per_s']} | tok/s={row['tokens_per_s']} | "
                     f"VRAM={row['peak_vram_GB']} GB | kWh={row['energy_kWh']} | TFLOPs/s={row['TFLOPs_per_s']}"
                 )
 
     finally:
         f_out.close()
         log.info(f"Saved results CSV → {out_csv}")
-        # Save a small run metadata JSON
         meta = {
             "model": args.model,
             "precision": args.precision,
