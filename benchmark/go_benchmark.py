@@ -22,6 +22,9 @@ except Exception:
 
 from transformers import AutoTokenizer, AutoModel, AutoConfig
 
+# Import the model loader
+from model_to_benchmark import load_model, get_model_info, get_max_length
+
 import logging
 logging.basicConfig(
     level=logging.INFO,
@@ -186,36 +189,23 @@ def run_benchmark(args):
         raise ValueError("CSV must contain columns: genome_id, seq")
     log.info(f"Loaded {len(df):,} sequences.")
 
-    log.info(f"Loading tokenizer: {args.model}")
-    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
-
-    log.info(f"Loading model: {args.model}")
-    config = AutoConfig.from_pretrained(args.model, trust_remote_code=True)
-    model = AutoModel.from_pretrained(
-        args.model,
-        torch_dtype=dtype,
-        device_map="auto" if device == "cuda" else None,
-        trust_remote_code=True
-    )
+    log.info(f"Loading model and tokenizer: {args.model}")
+    model, tokenizer, config = load_model(args.model, device, dtype)
     model.eval()
 
     # Determine max token length
-    max_len = getattr(config, "max_position_embeddings", None)
-    if (max_len is None) or (isinstance(max_len, int) and max_len <= 0):
-        tml = getattr(tokenizer, "model_max_length", None)
-        if isinstance(tml, int) and tml < 10_000_000:
-            max_len = tml
-        else:
-            max_len = None
+    max_len = get_max_length(config, tokenizer)
     if max_len is not None:
         log.info(f"Using max_length={max_len} tokens for truncation.")
     else:
         log.warning("No max_length found; proceeding without enforced truncation (may be unsafe for long inputs).")
 
-    n_params = sum(p.numel() for p in model.parameters())
-    d_model = getattr(config, "hidden_size", None) or getattr(config, "n_embd", None)
-    n_layer = getattr(config, "num_hidden_layers", None) or getattr(config, "n_layer", None)
-    d_ff = getattr(config, "intermediate_size", None)
+    # Get model architecture info
+    model_info = get_model_info(config, model)
+    n_params = model_info["n_params"]
+    d_model = model_info["d_model"]
+    n_layer = model_info["n_layer"]
+    d_ff = model_info["d_ff"]
     log.info(f"Model loaded: params={n_params/1e6:.1f}M, hidden={d_model}, layers={n_layer}, d_ff={d_ff}, dtype={dtype}, device={device}")
 
     bins_bp = [int(x) for x in args.bins]
