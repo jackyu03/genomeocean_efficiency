@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-# (original content omitted for brevity in this cell; we will reconstruct minimal needed parts)
-# To keep this concise, we will write the fully patched version directly.
-
-from textwrap import dedent as _dedent
-
+"""
+go_benchmark_v2.py — GenomeOcean baseline benchmark with:
+- Hardware-agnostic FLOPs accounting using post-truncation tokens
+- Energy logging (NVML) and TOKENS-PER-WATT metric
+- Optional explicit truncation (--truncate-bp / --truncate-tokens)
+- Robust per-combination error handling
+- Clean CLI logs and CSV+JSON outputs
+"""
 import os, sys, csv, time, math, json, argparse, threading
-from typing import List, Tuple, Dict
 from datetime import datetime
+from typing import List, Dict
 
 import numpy as np
 import pandas as pd
@@ -20,11 +23,6 @@ try:
 except Exception:
     NVML_AVAILABLE = False
 
-from transformers import AutoTokenizer, AutoModel, AutoConfig
-
-# Import the model loader
-from model_to_benchmark import load_model, get_model_info, get_max_length
-
 import logging
 logging.basicConfig(
     level=logging.INFO,
@@ -32,7 +30,12 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-log = logging.getLogger("go_bench")
+log = logging.getLogger("go_bench_v2")
+
+from transformers import AutoTokenizer, AutoModel, AutoConfig
+
+# Import the model loader
+from model_to_benchmark import load_model, get_model_info, get_max_length
 
 
 class EnergyMeter:
@@ -88,14 +91,12 @@ class EnergyMeter:
 
 
 def flops_per_seq_decoder(L:int, d:int, T:int, d_ff:int=None) -> float:
-    if d_ff is None:
-        m = 4.0
-    else:
-        m = float(d_ff) / float(d)
+    if T <= 0 or L <= 0 or d <= 0:
+        return 0.0
+    m = 4.0 if (d_ff is None) else float(d_ff)/float(d)
     term_proj = (4.0 + 4.0*m) * T * (d**2)
     term_attn = 2.0 * (T**2) * d
-    flops = L * (term_proj + term_attn)
-    return float(flops)
+    return float(L) * (term_proj + term_attn)
 
 
 def tokenize_lengths(tokenizer, seqs: List[str], batch_size: int = 128, max_len: int | None = None) -> List[int]:
@@ -115,6 +116,10 @@ def tokenize_lengths(tokenizer, seqs: List[str], batch_size: int = 128, max_len:
     return lens
 
 
+def truncate_by_bp(seq: str, target_bp: int) -> str:
+    return seq[:max(0, min(len(seq), target_bp))] if target_bp is not None else seq
+
+
 @torch.no_grad()
 def embed_batch(model: nn.Module, tokenizer, seqs: List[str], device: str, max_len: int | None = None) -> torch.Tensor:
     inputs = tokenizer(
@@ -128,48 +133,9 @@ def embed_batch(model: nn.Module, tokenizer, seqs: List[str], device: str, max_l
     inputs = {k: v.to(device) for k, v in inputs.items() if isinstance(v, torch.Tensor)}
     inputs.pop('token_type_ids', None)
     outputs = model(**inputs, output_hidden_states=True, return_dict=True)
-    if hasattr(outputs, "last_hidden_state"):
-        hs = outputs.last_hidden_state
-    elif hasattr(outputs, "hidden_states"):
-        hs = outputs.hidden_states[-1]
-    else:
-        raise RuntimeError("Model output missing hidden states")
+    hs = getattr(outputs, "last_hidden_state", None) or outputs.hidden_states[-1]
     emb = hs.mean(dim=1)
     return emb
-
-
-def make_bins_by_bp(df: pd.DataFrame, bins_bp: List[int], max_per_bin: int,
-                    tokenizer, sample_seed: int = 42, max_len: int | None = None) -> Dict[int, pd.DataFrame]:
-    samp = df.sample(min(len(df), 1000), random_state=sample_seed)
-    samp_tokens = tokenize_lengths(tokenizer, samp["seq"].tolist(), batch_size=64, max_len=max_len)
-    # bp per token estimate (may be truncated if max_len enforced; still useful)
-    mean_bp_per_token = np.mean([len(s)/max(t,1) for s, t in zip(samp["seq"], samp_tokens)])
-
-    log.info(f"Estimated ~{mean_bp_per_token:.2f} bp / token (from 1k-sample).")
-    lens_tokens = tokenize_lengths(tokenizer, df["seq"].tolist(), batch_size=128, max_len=max_len)
-    df = df.copy()
-    df["len_tokens"] = lens_tokens
-    df["len_bp"] = df["seq"].str.len()
-
-    bins_map = {b: [] for b in bins_bp}
-    for idx, row in df.iterrows():
-        bp = row["len_bp"]
-        target = min(bins_bp, key=lambda b: abs(bp - b))
-        bins_map[target].append(idx)
-
-    out = {}
-    rng = np.random.default_rng(seed=sample_seed)
-    for b in bins_bp:
-        idxs = bins_map[b]
-        if len(idxs) == 0:
-            log.warning(f"No sequences mapped to bin ~{b} bp")
-            continue
-        if len(idxs) > max_per_bin:
-            idxs = rng.choice(idxs, size=max_per_bin, replace=False)
-        sub = df.loc[idxs].copy()
-        out[b] = sub
-        log.info(f"Bin ~{b} bp: {len(sub)} sequences (mean bp={sub['len_bp'].mean():.0f}, mean tokens={sub['len_tokens'].mean():.0f})")
-    return out
 
 
 def run_benchmark(args):
@@ -196,9 +162,9 @@ def run_benchmark(args):
     # Determine max token length
     max_len = get_max_length(config, tokenizer)
     if max_len is not None:
-        log.info(f"Using max_length={max_len} tokens for truncation.")
+        log.info(f"Using max_length={max_len} tokens for tokenizer truncation.")
     else:
-        log.warning("No max_length found; proceeding without enforced truncation (may be unsafe for long inputs).")
+        log.warning("No max_length found; proceeding without enforced tokenizer truncation.")
 
     # Get model architecture info
     model_info = get_model_info(config, model)
@@ -208,17 +174,82 @@ def run_benchmark(args):
     d_ff = model_info["d_ff"]
     log.info(f"Model loaded: params={n_params/1e6:.1f}M, hidden={d_model}, layers={n_layer}, d_ff={d_ff}, dtype={dtype}, device={device}")
 
-    bins_bp = [int(x) for x in args.bins]
-    bins = make_bins_by_bp(df, bins_bp, args.samples_per_bin, tokenizer, sample_seed=42, max_len=max_len)
+    conditions: List[Dict] = []
+    rng = np.random.default_rng(42)
+
+    if args.truncate_bp or args.truncate_tokens:
+        if args.truncate_bp and args.truncate_tokens:
+            raise ValueError("Use only one of --truncate-bp or --truncate-tokens.")
+        if args.truncate_bp:
+            for tgt_bp in args.truncate_bp:
+                seqs_trunc = [truncate_by_bp(s, tgt_bp) for s in df["seq"].tolist()]
+                tok_lens = tokenize_lengths(tokenizer, seqs_trunc, batch_size=128, max_len=max_len)
+                keep = [i for i, t in enumerate(tok_lens) if t > 0]
+                if not keep:
+                    log.warning(f"No sequences remain after bp truncation={tgt_bp}. Skipping.")
+                    continue
+                if len(keep) > args.samples_per_cond:
+                    keep = list(rng.choice(keep, size=args.samples_per_cond, replace=False))
+                seqs_cond = [seqs_trunc[i] for i in keep]
+                tok_cond = [tok_lens[i] for i in keep]
+                mean_bp = int(np.mean([len(x) for x in seqs_cond]))
+                mean_tokens = int(np.mean(tok_cond))
+                conditions.append(dict(label=f"bp={tgt_bp}", seqs=seqs_cond, tok_lens=tok_cond,
+                                       mean_bp=mean_bp, mean_tokens=mean_tokens))
+        else:
+            for tgt_tok in args.truncate_tokens:
+                eff_max_len = tgt_tok if (max_len is None) else min(tgt_tok, max_len)
+                seqs_full = df["seq"].tolist()
+                tok_lens = tokenize_lengths(tokenizer, seqs_full, batch_size=128, max_len=eff_max_len)
+                keep = [i for i, t in enumerate(tok_lens) if t > 0]
+                if not keep:
+                    log.warning(f"No sequences remain after token truncation={tgt_tok}. Skipping.")
+                    continue
+                if len(keep) > args.samples_per_cond:
+                    keep = list(rng.choice(keep, size=args.samples_per_cond, replace=False))
+                seqs_cond = [seqs_full[i] for i in keep]
+                tok_cond = [tok_lens[i] for i in keep]
+                mean_bp = int(np.mean([len(x) for x in seqs_cond]))
+                mean_tokens = int(np.mean(tok_cond))
+                conditions.append(dict(label=f"tok={tgt_tok}", seqs=seqs_cond, tok_lens=tok_cond,
+                                       mean_bp=mean_bp, mean_tokens=mean_tokens))
+    else:
+        bins_bp = [int(x) for x in args.bins]
+        lens_tokens_all = tokenize_lengths(tokenizer, df["seq"].tolist(), batch_size=128, max_len=max_len)
+        df = df.copy()
+        df["len_bp"] = df["seq"].str.len()
+        df["len_tokens"] = lens_tokens_all
+        bins_map = {b: [] for b in bins_bp}
+        for idx, row in df.iterrows():
+            target = min(bins_bp, key=lambda b: abs(row["len_bp"] - b))
+            bins_map[target].append(idx)
+        for b in bins_bp:
+            idxs = bins_map[b]
+            if len(idxs) == 0:
+                log.warning(f"No sequences mapped to bin ~{b} bp")
+                continue
+            if len(idxs) > args.samples_per_cond:
+                idxs = list(rng.choice(idxs, size=args.samples_per_cond, replace=False))
+            sub = df.loc[idxs]
+            mean_bp = int(sub["len_bp"].mean())
+            mean_tokens = int(sub["len_tokens"].mean())
+            conditions.append(dict(label=f"bin~{b}", seqs=sub["seq"].tolist(),
+                                   tok_lens=sub["len_tokens"].tolist(),
+                                   mean_bp=mean_bp, mean_tokens=mean_tokens))
+
+    if not conditions:
+        raise RuntimeError("No valid conditions to run.")
 
     os.makedirs(args.outdir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_csv = os.path.join(args.outdir, f"benchmark_{timestamp}.csv")
     fieldnames = [
         "model","commit","gpu_name","driver","cuda","torch","precision",
-        "bin_bp","mean_bp","mean_tokens","batch_size",
+        "condition","mean_bp","mean_tokens","batch_size",
         "runs","warmup","E2EL_ms","seqs_per_s","tokens_per_s",
-        "peak_vram_GB","energy_kWh","flops_per_seq","TFLOPs_per_s"
+        "peak_vram_GB","energy_kWh","avg_power_W",
+        "flops_per_seq","TFLOPs_per_s",
+        "eff_seq_per_TFLOP","eff_tokens_per_TFLOP","tokens_per_watt"
     ]
 
     commit = os.environ.get("GIT_COMMIT", "")
@@ -233,95 +264,120 @@ def run_benchmark(args):
     writer.writeheader()
 
     try:
-        for bin_bp, sub in bins.items():
-            seqs = sub["seq"].tolist()
-            lens_tokens = sub["len_tokens"].tolist()
-            mean_tokens = int(np.mean(lens_tokens))
-            mean_bp = int(sub["len_bp"].mean())
+        for cond in conditions:
+            label = cond["label"]
+            seqs_all = cond["seqs"]
+            tok_lens_all = cond["tok_lens"]
+            mean_bp = cond["mean_bp"]
+            mean_tokens = cond["mean_tokens"]
 
             if (n_layer is not None) and (d_model is not None):
-                flops_seq = flops_per_seq_decoder(n_layer, d_model, mean_tokens, d_ff)
+                flops_each = [flops_per_seq_decoder(int(n_layer), int(d_model), int(T), int(d_ff) if d_ff else None)
+                              for T in tok_lens_all]
+                flops_seq_mean = float(np.mean(flops_each)) if flops_each else float("nan")
             else:
-                flops_seq = float("nan")
+                flops_seq_mean = float("nan")
 
-            idx = np.arange(len(seqs))
+            idx = np.arange(len(seqs_all))
             np.random.shuffle(idx)
-            seqs = [seqs[i] for i in idx]
+            seqs_all = [seqs_all[i] for i in idx]
 
             for bs in args.batch_sizes:
-                warm = max(0, args.warmup)
-                log.info(f"[Bin ~{bin_bp} bp | mean tokens ~{mean_tokens} | BS={bs}] Warmup x{warm} ...")
-                for _ in range(warm):
-                    sample = seqs[:bs]
-                    _ = embed_batch(model, tokenizer, sample, device=device, max_len=max_len)
-                    if device == "cuda":
-                        torch.cuda.synchronize()
-
-                n_runs = max(1, math.floor(len(seqs) / bs))
-                if args.max_batches is not None:
-                    n_runs = min(n_runs, args.max_batches)
-                log.info(f"[Bin ~{bin_bp} bp | BS={bs}] Timed runs: {n_runs}")
-
-                if device == "cuda":
-                    torch.cuda.reset_peak_memory_stats()
-
-                start = time.perf_counter()
-                with EnergyMeter(gpu_index=0, interval_s=0.05) as em:
-                    n_tokens_total = 0
-                    n_seqs_total = 0
-                    for i in range(n_runs):
-                        batch = seqs[i*bs:(i+1)*bs]
-                        _ = embed_batch(model, tokenizer, batch, device=device, max_len=max_len)
+                try:
+                    warm = max(0, args.warmup)
+                    log.info(f"[{label} | mean tokens ~{mean_tokens} | BS={bs}] Warmup x{warm} ...")
+                    for _ in range(warm):
+                        sample = seqs_all[:bs]
+                        _ = embed_batch(model, tokenizer, sample, device=device, max_len=max_len)
                         if device == "cuda":
                             torch.cuda.synchronize()
-                        toks = tokenize_lengths(tokenizer, batch, batch_size=bs, max_len=max_len)
-                        n_tokens_total += sum(toks)
-                        n_seqs_total += len(batch)
-                end = time.perf_counter()
 
-                elapsed = (end - start)
-                e2el_ms = (elapsed * 1000.0) / max(1, n_runs)
+                    n_runs = max(1, math.floor(len(seqs_all) / bs))
+                    if args.max_batches is not None:
+                        n_runs = min(n_runs, args.max_batches)
+                    log.info(f"[{label} | BS={bs}] Timed runs: {n_runs}")
 
-                seqs_per_s = n_seqs_total / max(elapsed, 1e-9)
-                tokens_per_s = n_tokens_total / max(elapsed, 1e-9)
+                    if device == "cuda":
+                        torch.cuda.reset_peak_memory_stats()
 
-                peak_vram_gb = None
-                if device == "cuda":
-                    peak_vram_gb = torch.cuda.max_memory_reserved() / 1e9
+                    start = time.perf_counter()
+                    with EnergyMeter(gpu_index=0, interval_s=0.05) as em:
+                        n_tokens_total = 0
+                        n_seqs_total = 0
+                        for i in range(n_runs):
+                            batch = seqs_all[i*bs:(i+1)*bs]
+                            _ = embed_batch(model, tokenizer, batch, device=device, max_len=max_len)
+                            if device == "cuda":
+                                torch.cuda.synchronize()
+                            toks = tokenize_lengths(tokenizer, batch, batch_size=bs, max_len=max_len)
+                            n_tokens_total += sum(toks)
+                            n_seqs_total += len(batch)
+                    end = time.perf_counter()
 
-                if not math.isnan(flops_seq):
-                    tflops_per_s = (flops_seq * seqs_per_s) / 1e12
-                else:
-                    tflops_per_s = float("nan")
+                    elapsed = max(end - start, 1e-9)
+                    e2el_ms = (elapsed * 1000.0) / max(1, n_runs)
 
-                row = {
-                    "model": args.model,
-                    "commit": commit,
-                    "gpu_name": gpu_name,
-                    "driver": driver,
-                    "cuda": cuda,
-                    "torch": torch.__version__,
-                    "precision": args.precision,
-                    "bin_bp": bin_bp,
-                    "mean_bp": mean_bp,
-                    "mean_tokens": mean_tokens,
-                    "batch_size": bs,
-                    "runs": n_runs,
-                    "warmup": warm,
-                    "E2EL_ms": round(e2el_ms, 3),
-                    "seqs_per_s": round(seqs_per_s, 4),
-                    "tokens_per_s": round(tokens_per_s, 2),
-                    "peak_vram_GB": None if peak_vram_gb is None else round(peak_vram_gb, 3),
-                    "energy_kWh": None if (not NVML_AVAILABLE or (em.kwh is None)) else round(em.kwh, 6),
-                    "flops_per_seq": None if math.isnan(flops_seq) else int(flops_seq),
-                    "TFLOPs_per_s": None if math.isnan(tflops_per_s) else round(tflops_per_s, 3),
-                }
-                writer.writerow(row)
-                f_out.flush()
-                log.info(
-                    f"[RESULT] bin~{bin_bp}bp, BS={bs} | E2EL={row['E2EL_ms']} ms | seq/s={row['seqs_per_s']} | tok/s={row['tokens_per_s']} | "
-                    f"VRAM={row['peak_vram_GB']} GB | kWh={row['energy_kWh']} | TFLOPs/s={row['TFLOPs_per_s']}"
-                )
+                    seqs_per_s = n_seqs_total / elapsed
+                    tokens_per_s = n_tokens_total / elapsed
+
+                    peak_vram_gb = (torch.cuda.max_memory_reserved() / 1e9) if (device == "cuda") else None
+
+                    tflops_per_s = (flops_seq_mean * seqs_per_s) / 1e12 if not math.isnan(flops_seq_mean) else float("nan")
+                    eff_seq_per_TFLOP = (seqs_per_s / (flops_seq_mean / 1e12)) if (flops_seq_mean and not math.isnan(flops_seq_mean)) else None
+                    eff_tokens_per_TFLOP = (tokens_per_s / (flops_seq_mean / 1e12)) if (flops_seq_mean and not math.isnan(flops_seq_mean)) else None
+
+                    if NVML_AVAILABLE and (em.kwh is not None):
+                        avg_power_W = (em.kwh * 3_600_000.0) / elapsed
+                        tokens_per_watt = tokens_per_s / avg_power_W if avg_power_W > 0 else None
+                        energy_kWh = em.kwh
+                    else:
+                        avg_power_W = None
+                        tokens_per_watt = None
+                        energy_kWh = None
+
+                    row = {
+                        "model": args.model,
+                        "commit": commit,
+                        "gpu_name": gpu_name,
+                        "driver": driver,
+                        "cuda": cuda,
+                        "torch": torch.__version__,
+                        "precision": args.precision,
+                        "condition": label,
+                        "mean_bp": mean_bp,
+                        "mean_tokens": mean_tokens,
+                        "batch_size": bs,
+                        "runs": n_runs,
+                        "warmup": warm,
+                        "E2EL_ms": round(e2el_ms, 3),
+                        "seqs_per_s": round(seqs_per_s, 4),
+                        "tokens_per_s": round(tokens_per_s, 2),
+                        "peak_vram_GB": None if peak_vram_gb is None else round(peak_vram_gb, 3),
+                        "energy_kWh": None if energy_kWh is None else round(energy_kWh, 6),
+                        "avg_power_W": None if avg_power_W is None else round(avg_power_W, 2),
+                        "flops_per_seq": None if (flops_seq_mean is None or math.isnan(flops_seq_mean)) else int(flops_seq_mean),
+                        "TFLOPs_per_s": None if (tflops_per_s is None or math.isnan(tflops_per_s)) else round(tflops_per_s, 3),
+                        "eff_seq_per_TFLOP": None if (eff_seq_per_TFLOP is None) else round(eff_seq_per_TFLOP, 6),
+                        "eff_tokens_per_TFLOP": None if (eff_tokens_per_TFLOP is None) else round(eff_tokens_per_TFLOP, 6),
+                        "tokens_per_watt": None if (tokens_per_watt is None) else round(tokens_per_watt, 6),
+                    }
+                    writer.writerow(row); f_out.flush()
+                    log.info(
+                        f"[RESULT] {label}, BS={bs} | "
+                        f"E2EL={row['E2EL_ms']} ms | seq/s={row['seqs_per_s']} | tok/s={row['tokens_per_s']} | "
+                        f"VRAM={row['peak_vram_GB']} GB | kWh={row['energy_kWh']} | W={row['avg_power_W']} | "
+                        f"TFLOPs/s={row['TFLOPs_per_s']} | tok/W={row['tokens_per_watt']}"
+                    )
+                except RuntimeError as e:
+                    msg = str(e).lower()
+                    if "out of memory" in msg:
+                        log.error(f"OOM at {label}, BS={bs}; skipping this combo.")
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        continue
+                    else:
+                        log.exception(f"Failure at {label}, BS={bs}; skipping this combo.")
+                        continue
 
     finally:
         f_out.close()
@@ -329,7 +385,7 @@ def run_benchmark(args):
         meta = {
             "model": args.model,
             "precision": args.precision,
-            "bins_bp": bins_bp,
+            "conditions": [c["label"] for c in conditions],
             "batch_sizes": args.batch_sizes,
             "warmup": args.warmup,
             "device": args.device,
@@ -344,16 +400,20 @@ def run_benchmark(args):
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="GenomeOcean baseline benchmark (GPU-agnostic)")
+    p = argparse.ArgumentParser(description="GenomeOcean baseline benchmark (v2) with tokens-per-watt and truncation controls")
     p.add_argument("--csv", type=str, required=True, help="GTDB CSV with columns: genome_id, seq")
     p.add_argument("--model", type=str, required=True, help="HF model id (e.g., DOEJGI/GenomeOcean-4B)")
     p.add_argument("--device", type=str, default="cuda", choices=["cuda","cpu"], help="Device")
     p.add_argument("--precision", type=str, default="float16", choices=["float16","bfloat16","float32"])
-    p.add_argument("--samples-per-bin", type=int, default=1000, help="Max sequences per bin")
-    p.add_argument("--bins", type=int, nargs="+", default=[1000, 5000, 10000, 50000], help="Approx. bp bin centers")
-    p.add_argument("--batch-sizes", type=int, nargs="+", default=[1,4,8,16], help="Batch sizes to test")
-    p.add_argument("--warmup", type=int, default=3, help="Warmup iterations per (bin, batch)")
-    p.add_argument("--max-batches", type=int, default=None, help="Optional cap on timed batches per (bin, batch)")
+    p.add_argument("--truncate-bp", type=int, nargs="+", default=None,
+                   help="Use explicit bp truncation targets (e.g., 1000 2500 5000) instead of binning.")
+    p.add_argument("--truncate-tokens", type=int, nargs="+", default=None,
+                   help="Use explicit token truncation targets (mutually exclusive with --truncate-bp).")
+    p.add_argument("--samples-per-cond", type=int, default=1000, help="Max sequences per condition (bin or truncation target).")
+    p.add_argument("--bins", type=int, nargs="+", default=[1000, 5000, 10000], help="Approx. bp bin centers (legacy mode).")
+    p.add_argument("--batch-sizes", type=int, nargs="+", default=[1,4,8], help="Batch sizes to test")
+    p.add_argument("--warmup", type=int, default=3, help="Warmup iterations per condition × batch")
+    p.add_argument("--max-batches", type=int, default=None, help="Optional cap on timed batches per condition × batch")
     p.add_argument("--outdir", type=str, default="./results", help="Output directory for CSV/JSON")
     return p.parse_args()
 

@@ -27,10 +27,35 @@ python go_benchmark.py \
   --model DOEJGI/GenomeOcean-100M \
   --device cuda \
   --precision float16 \
-  --samples-per-bin 1000 \
+  --samples-per-cond 1000 \
   --bins 2500 5000 \
   --batch-sizes 1 4 8 \
   --warmup 3 \
   --outdir ./results
+
+# Alternative: Use explicit truncation instead of binning
+# For bp truncation:
+# python go_benchmark.py \
+#   --csv dataset/arc53_2000_seq_50k.csv \
+#   --model DOEJGI/GenomeOcean-100M \
+#   --device cuda \
+#   --precision float16 \
+#   --samples-per-cond 1000 \
+#   --truncate-bp 1000 2500 5000 10000 \
+#   --batch-sizes 1 4 8 \
+#   --warmup 3 \
+#   --outdir ./results
+
+# For token truncation:
+# python go_benchmark.py \
+#   --csv dataset/arc53_2000_seq_50k.csv \
+#   --model DOEJGI/GenomeOcean-100M \
+#   --device cuda \
+#   --precision float16 \
+#   --samples-per-cond 1000 \
+#   --truncate-tokens 512 1024 2048 4096 \
+#   --batch-sizes 1 4 8 \
+#   --warmup 3 \
+#   --outdir ./results
 
 echo "Benchmark completed at $(date)"
