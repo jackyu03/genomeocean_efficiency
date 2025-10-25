@@ -6,8 +6,9 @@ This benchmark suite allows you to test different model loading strategies and c
 
 1. **Run with default settings:**
 ```bash
-python go_benchmark.py --csv your_data.csv --model DOEJGI/GenomeOcean-4B
+python go_benchmark.py --csv your_data.csv --model DOEJGI/GenomeOcean-4B ...
 ```
+other parameters control the benchmark setup...
 
 2. **Modify model loading strategy:**
 Edit `model_to_benchmark.py` and uncomment your desired loading method in the `load_model()` function.
