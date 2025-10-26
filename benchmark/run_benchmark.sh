@@ -22,29 +22,19 @@ nvidia-smi
 echo "Running on GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader)"
 
 # Run the benchmark
-python go_benchmark.py \
-  --csv dataset/arc53_2000_seq_50k.csv \
-  --model DOEJGI/GenomeOcean-100M \
-  --device cuda \
-  --precision float16 \
-  --samples-per-cond 1000 \
-  --bins 2500 5000 \
-  --batch-sizes 1 4 8 \
-  --warmup 3 \
-  --outdir ./results
 
-# Alternative: Use explicit truncation instead of binning
+# Use explicit truncation instead of binning
 # For bp truncation:
-# python go_benchmark.py \
-#   --csv dataset/arc53_2000_seq_50k.csv \
-#   --model DOEJGI/GenomeOcean-100M \
-#   --device cuda \
-#   --precision float16 \
-#   --samples-per-cond 1000 \
-#   --truncate-bp 1000 2500 5000 10000 \
-#   --batch-sizes 1 4 8 \
-#   --warmup 3 \
-#   --outdir ./results
+ python go_benchmark.py \
+   --csv dataset/arc53_2000_seq_50k.csv \
+   --model DOEJGI/GenomeOcean-100M \
+   --device cuda \
+   --precision float16 \
+   --samples-per-cond 1000 \
+   --truncate-bp 1000 2500 5000 10000 \
+   --batch-sizes 1 4 8 \
+   --warmup 3 \
+   --outdir ./results
 
 # For token truncation:
 # python go_benchmark.py \
