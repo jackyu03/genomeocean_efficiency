@@ -133,7 +133,9 @@ def embed_batch(model: nn.Module, tokenizer, seqs: List[str], device: str, max_l
     inputs = {k: v.to(device) for k, v in inputs.items() if isinstance(v, torch.Tensor)}
     inputs.pop('token_type_ids', None)
     outputs = model(**inputs, output_hidden_states=True, return_dict=True)
-    hs = getattr(outputs, "last_hidden_state", None) or outputs.hidden_states[-1]
+    hs = getattr(outputs, "last_hidden_state", None)
+    if hs is None:
+        hs = outputs.hidden_states[-1]
     emb = hs.mean(dim=1)
     return emb
 
