@@ -246,7 +246,7 @@ def run_benchmark(args):
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_csv = os.path.join(args.outdir, f"benchmark_{timestamp}.csv")
     fieldnames = [
-        "model","commit","gpu_name","driver","cuda","torch","precision",
+        "model","commit","gpu_name","driver","cuda","torch","precision","quantization",
         "condition","mean_bp","mean_tokens","batch_size",
         "runs","warmup","E2EL_ms","seqs_per_s","tokens_per_s",
         "peak_vram_GB","energy_kWh","avg_power_W",
@@ -255,6 +255,7 @@ def run_benchmark(args):
     ]
 
     commit = os.environ.get("GIT_COMMIT", "")
+    quantization = os.environ.get("QUANT_MODE", "standard")
     gpu_name = driver = cuda = ""
     if torch.cuda.is_available() and device == "cuda":
         gpu_name = torch.cuda.get_device_name(0)
@@ -345,6 +346,7 @@ def run_benchmark(args):
                         "cuda": cuda,
                         "torch": torch.__version__,
                         "precision": args.precision,
+                        "quantization": quantization,
                         "condition": label,
                         "mean_bp": mean_bp,
                         "mean_tokens": mean_tokens,
