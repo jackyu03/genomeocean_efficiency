@@ -7,21 +7,46 @@
 #SBATCH -q es_normal
 #SBATCH --gres=gpu:A40:1
 #SBATCH --job-name=quant_benchmark
-#SBATCH --output=./results/logs/quant_benchmark_%j.out
-#SBATCH --error=./results/logs/quant_benchmark_%j.err
+# Create logs directory first (before SLURM tries to write to it)
+#SBATCH --output=quant_benchmark_%j.out
+#SBATCH --error=quant_benchmark_%j.err
 
 # Comprehensive quantization benchmark script
 # Tests all quantization modes: standard, 8bit, 4bit variants
 
+# Print initial info for debugging
+echo "=== JOB INITIALIZATION DEBUG ==="
+echo "Job started at: $(date)"
+echo "Job ID: $SLURM_JOB_ID"
+echo "Working directory: $(pwd)"
+echo "User: $(whoami)"
+echo "Shell: $SHELL"
+echo "PATH: $PATH"
+echo "Initial Python: $(which python 2>/dev/null || echo 'python not found')"
+echo "Initial Python version: $(python --version 2>/dev/null || echo 'python not available')"
+echo "================================="
+
+# Create results and logs directories first
+mkdir -p ./results/logs
+
+# Move log files to proper location
+mv "quant_benchmark_${SLURM_JOB_ID}.out" "./results/logs/" 2>/dev/null || true
+mv "quant_benchmark_${SLURM_JOB_ID}.err" "./results/logs/" 2>/dev/null || true
+
 # Load environment and move to benchmark directory
-cd /global/scratch/users/mutianyu2026/genomeocean_efficiency/benchmark/
+echo "Changing to benchmark directory..."
+cd /global/scratch/users/mutianyu2026/genomeocean_efficiency/benchmark/ || {
+    echo "ERROR: Cannot change to benchmark directory"
+    exit 1
+}
 
 # Activate conda environment
+echo "Activating conda environment..."
 source ~/anaconda3/etc/profile.d/conda.sh
 conda activate GO
 
-# Create results and logs directories
-mkdir -p ./results/logs
+echo "Python version: $(python --version)"
+echo "Conda environment: $CONDA_DEFAULT_ENV"
 
 # Comprehensive system diagnostics
 echo "=== COMPREHENSIVE SYSTEM DIAGNOSTICS ==="
@@ -64,8 +89,28 @@ echo "SLURM_JOB_ID: ${SLURM_JOB_ID:-'Not set'}"
 echo "SLURM_PROCID: ${SLURM_PROCID:-'Not set'}"
 echo "=============================================="
 
-# Common benchmark parameters
+# Check if required files exist
+echo "Checking required files..."
 CSV_FILE="dataset/arc53_2000_seq_50k.csv"
+if [ ! -f "$CSV_FILE" ]; then
+    echo "ERROR: Dataset file not found: $CSV_FILE"
+    echo "Available files in dataset/:"
+    ls -la dataset/ 2>/dev/null || echo "Dataset directory not found"
+    exit 1
+fi
+
+# Check if Python scripts exist
+if [ ! -f "go_benchmark.py" ]; then
+    echo "ERROR: go_benchmark.py not found"
+    exit 1
+fi
+
+if [ ! -f "analyze_quantization_results.py" ]; then
+    echo "ERROR: analyze_quantization_results.py not found"
+    exit 1
+fi
+
+# Common benchmark parameters
 MODEL="DOEJGI/GenomeOcean-100M"
 DEVICE="cuda"
 PRECISION="float16"
