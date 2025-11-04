@@ -31,7 +31,7 @@ def load_benchmark_results(results_dir):
     
     return combined_df
 
-def analyze_quantization_performance(df):
+def analyze_quantization_performance(df, output_dir):
     """Analyze performance across quantization modes."""
     print("\n=== Quantization Performance Analysis ===")
     
@@ -47,6 +47,12 @@ def analyze_quantization_performance(df):
     
     print("\nPerformance Summary by Quantization Mode:")
     print(quant_summary)
+    
+    # Save the quant_summary dataframe
+    output_dir = Path(output_dir)
+    quant_summary_file = output_dir / 'quant_summary.csv'
+    quant_summary.to_csv(quant_summary_file)
+    print(f"\nQuant summary saved to: {quant_summary_file}")
     
     return quant_summary
 
@@ -169,6 +175,60 @@ def create_performance_plots(df, output_dir):
     
     print(f"\nPlots saved to: {output_dir}")
 
+def save_quantization_summary(df, output_dir):
+    """Save detailed quantization summary as CSV and JSON."""
+    output_dir = Path(output_dir)
+    
+    # Create detailed summary by quantization mode
+    summary_stats = df.groupby('quantization').agg({
+        'tokens_per_s': ['mean', 'std', 'min', 'max'],
+        'seqs_per_s': ['mean', 'std', 'min', 'max'],
+        'peak_vram_GB': ['mean', 'std', 'min', 'max'],
+        'E2EL_ms': ['mean', 'std', 'min', 'max'],
+        'avg_power_W': ['mean', 'std', 'min', 'max'],
+        'tokens_per_watt': ['mean', 'std', 'min', 'max'],
+        'batch_size': ['min', 'max']  # Show batch size range
+    }).round(3)
+    
+    # Flatten column names
+    summary_stats.columns = ['_'.join(col).strip() for col in summary_stats.columns.values]
+    
+    # Save as CSV
+    csv_file = output_dir / 'quantization_summary.csv'
+    summary_stats.to_csv(csv_file)
+    
+    # Save as JSON for easy programmatic access
+    json_file = output_dir / 'quantization_summary.json'
+    summary_stats.to_json(json_file, indent=2)
+    
+    # Create a simplified comparison table
+    comparison_df = df.groupby('quantization').agg({
+        'tokens_per_s': 'mean',
+        'peak_vram_GB': 'mean',
+        'tokens_per_watt': 'mean',
+        'E2EL_ms': 'mean'
+    }).round(2)
+    
+    # Add memory reduction vs standard
+    if 'standard' in comparison_df.index:
+        standard_memory = comparison_df.loc['standard', 'peak_vram_GB']
+        comparison_df['memory_reduction_pct'] = ((standard_memory - comparison_df['peak_vram_GB']) / standard_memory * 100).round(1)
+    
+    # Add throughput ratio vs standard
+    if 'standard' in comparison_df.index:
+        standard_throughput = comparison_df.loc['standard', 'tokens_per_s']
+        comparison_df['throughput_ratio'] = (comparison_df['tokens_per_s'] / standard_throughput).round(3)
+    
+    comparison_file = output_dir / 'quantization_comparison.csv'
+    comparison_df.to_csv(comparison_file)
+    
+    print(f"\nQuantization summary saved to:")
+    print(f"  - Detailed: {csv_file}")
+    print(f"  - JSON: {json_file}")
+    print(f"  - Comparison: {comparison_file}")
+    
+    return summary_stats, comparison_df
+
 def generate_summary_report(df, output_dir):
     """Generate a comprehensive summary report."""
     output_dir = Path(output_dir)
@@ -179,36 +239,61 @@ def generate_summary_report(df, output_dir):
         f.write("=" * 50 + "\n\n")
         
         f.write(f"Total benchmark runs: {len(df)}\n")
-        f.write(f"Quantization modes tested: {', '.join(df['quantization'].unique())}\n")
+        f.write(f"Quantization modes tested: {', '.join(sorted(df['quantization'].unique()))}\n")
         f.write(f"Models tested: {', '.join(df['model'].unique())}\n")
-        f.write(f"Precision modes: {', '.join(df['precision'].unique())}\n\n")
+        f.write(f"Precision modes: {', '.join(df['precision'].unique())}\n")
+        f.write(f"Batch sizes tested: {', '.join(map(str, sorted(df['batch_size'].unique())))}\n\n")
         
         # Performance summary
-        f.write("PERFORMANCE SUMMARY\n")
-        f.write("-" * 20 + "\n")
+        f.write("PERFORMANCE SUMMARY BY QUANTIZATION MODE\n")
+        f.write("-" * 40 + "\n")
         perf_summary = df.groupby('quantization').agg({
             'tokens_per_s': 'mean',
+            'seqs_per_s': 'mean',
             'peak_vram_GB': 'mean',
+            'E2EL_ms': 'mean',
             'tokens_per_watt': 'mean'
         }).round(2)
         f.write(perf_summary.to_string())
         f.write("\n\n")
         
+        # Memory efficiency analysis
+        if 'standard' in df['quantization'].values:
+            f.write("MEMORY EFFICIENCY vs STANDARD\n")
+            f.write("-" * 30 + "\n")
+            standard_memory = df[df['quantization'] == 'standard']['peak_vram_GB'].mean()
+            f.write(f"Standard baseline: {standard_memory:.2f} GB\n\n")
+            
+            for quant_mode in sorted(df['quantization'].unique()):
+                if quant_mode != 'standard':
+                    mode_memory = df[df['quantization'] == quant_mode]['peak_vram_GB'].mean()
+                    reduction = (standard_memory - mode_memory) / standard_memory * 100
+                    f.write(f"{quant_mode:15s}: {mode_memory:6.2f} GB ({reduction:+5.1f}%)\n")
+            f.write("\n")
+        
         # Best performers
         f.write("BEST PERFORMERS\n")
         f.write("-" * 15 + "\n")
-        best_throughput = df.loc[df['tokens_per_s'].idxmax()]
-        best_memory = df.loc[df['peak_vram_GB'].idxmin()]
         
-        f.write(f"Highest throughput: {best_throughput['quantization']} ")
-        f.write(f"({best_throughput['tokens_per_s']:.0f} tokens/s)\n")
-        f.write(f"Lowest memory usage: {best_memory['quantization']} ")
-        f.write(f"({best_memory['peak_vram_GB']:.2f} GB)\n")
+        if 'tokens_per_s' in df.columns:
+            best_throughput = df.loc[df['tokens_per_s'].idxmax()]
+            f.write(f"Highest throughput: {best_throughput['quantization']} ")
+            f.write(f"({best_throughput['tokens_per_s']:.0f} tokens/s, BS={best_throughput['batch_size']})\n")
+        
+        if 'peak_vram_GB' in df.columns:
+            best_memory = df.loc[df['peak_vram_GB'].idxmin()]
+            f.write(f"Lowest memory usage: {best_memory['quantization']} ")
+            f.write(f"({best_memory['peak_vram_GB']:.2f} GB, BS={best_memory['batch_size']})\n")
+        
+        if 'E2EL_ms' in df.columns:
+            best_latency = df.loc[df['E2EL_ms'].idxmin()]
+            f.write(f"Lowest latency: {best_latency['quantization']} ")
+            f.write(f"({best_latency['E2EL_ms']:.1f} ms, BS={best_latency['batch_size']})\n")
         
         if 'tokens_per_watt' in df.columns and not df['tokens_per_watt'].isna().all():
             best_efficiency = df.loc[df['tokens_per_watt'].idxmax()]
             f.write(f"Most energy efficient: {best_efficiency['quantization']} ")
-            f.write(f"({best_efficiency['tokens_per_watt']:.2f} tokens/watt)\n")
+            f.write(f"({best_efficiency['tokens_per_watt']:.2f} tokens/watt, BS={best_efficiency['batch_size']})\n")
     
     print(f"\nSummary report saved to: {report_file}")
 
@@ -232,9 +317,12 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     
     # Run analyses
-    analyze_quantization_performance(df)
+    quant_summary = analyze_quantization_performance(df, args.output_dir)
     analyze_memory_efficiency(df)
     analyze_energy_efficiency(df)
+    
+    # Save quantization summary
+    save_quantization_summary(df, args.output_dir)
     
     # Create visualizations
     create_performance_plots(df, args.output_dir)
