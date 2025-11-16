@@ -33,14 +33,30 @@ def load_benchmark_results(results_dir: str) -> pd.DataFrame:
 def compute_performance_summary(df: pd.DataFrame) -> pd.DataFrame:
     """Compute performance summary statistics by quantization mode."""
     
-    metrics = {
-        'seqs_per_s': ['mean', 'std', 'min', 'max'],
-        'tokens_per_s': ['mean', 'std', 'min', 'max'],
-        'peak_vram_GB': ['mean', 'std', 'min', 'max'],
-        'E2EL_ms': ['mean', 'std', 'min', 'max'],
-        'avg_power_W': ['mean', 'std', 'min', 'max'],
-        'tokens_per_watt': ['mean', 'std', 'min', 'max']
-    }
+    # Check if we have multiple samples per quantization mode
+    samples_per_mode = df.groupby('quantization').size()
+    has_multiple_samples = (samples_per_mode > 1).any()
+    
+    if has_multiple_samples:
+        # Include std when we have multiple samples
+        metrics = {
+            'seqs_per_s': ['mean', 'std', 'min', 'max'],
+            'tokens_per_s': ['mean', 'std', 'min', 'max'],
+            'peak_vram_GB': ['mean', 'std', 'min', 'max'],
+            'E2EL_ms': ['mean', 'std', 'min', 'max'],
+            'avg_power_W': ['mean', 'std', 'min', 'max'],
+            'tokens_per_watt': ['mean', 'std', 'min', 'max']
+        }
+    else:
+        # Skip std when we only have 1 sample per mode
+        metrics = {
+            'seqs_per_s': ['mean'],
+            'tokens_per_s': ['mean'],
+            'peak_vram_GB': ['mean'],
+            'E2EL_ms': ['mean'],
+            'avg_power_W': ['mean'],
+            'tokens_per_watt': ['mean']
+        }
     
     # Filter metrics that exist in dataframe
     available_metrics = {k: v for k, v in metrics.items() if k in df.columns}
@@ -65,7 +81,8 @@ def compute_memory_efficiency(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict]:
         for quant_mode in df['quantization'].unique():
             if quant_mode != 'standard':
                 mode_memory = df[df['quantization'] == quant_mode]['peak_vram_GB'].mean()
-                reduction_pct = (standard_memory - mode_memory) / standard_memory * 100
+                # Negative means reduction, positive means increase
+                reduction_pct = -((mode_memory - standard_memory) / standard_memory * 100)
                 memory_reduction[quant_mode] = {
                     'memory_gb': mode_memory,
                     'reduction_pct': reduction_pct

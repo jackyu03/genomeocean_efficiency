@@ -54,7 +54,7 @@ for QUANT_MODE in "${QUANT_MODES[@]}"; do
     # Set environment variable for quantization mode
     export QUANT_MODE=$QUANT_MODE
     
-    # Run the benchmark
+    # Run the benchmark (repeats handled inside go_benchmark.py)
     python go_benchmark.py \
         --csv "$CSV_FILE" \
         --model "$MODEL" \
@@ -64,6 +64,7 @@ for QUANT_MODE in "${QUANT_MODES[@]}"; do
         --truncate-bp $TRUNCATE_BP \
         --batch-sizes $BATCH_SIZES \
         --warmup $WARMUP \
+        --num-repeats 3 \
         --outdir "$OUTDIR"
     
     echo "Completed: $QUANT_MODE"
@@ -76,8 +77,9 @@ done
 echo ""
 echo "Quantization benchmark completed at $(date)"
 
-# Run complete analysis
-ANALYSIS_DIR="$OUTDIR/analysis"
+# Run complete analysis with timestamp
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+ANALYSIS_DIR="$OUTDIR/analysis_$TIMESTAMP"
 
 echo ""
 echo "Running complete analysis (performance + quality + visualizations)..."

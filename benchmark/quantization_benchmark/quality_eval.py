@@ -53,13 +53,16 @@ def extract_layer_outputs(model, tokenizer, sequences: List[str],
             outputs = model(**inputs, output_hidden_states=True, return_dict=True)
             hidden_states = outputs.hidden_states
             
-            # Extract requested layers
+            # Extract requested layers and take mean pooling to get fixed-size representation
             if 'last' in layers:
-                layer_outputs['last'].append(hidden_states[-1].cpu())
+                # Mean pool over sequence length to get (batch_size, hidden_dim)
+                pooled = hidden_states[-1].mean(dim=1).cpu()
+                layer_outputs['last'].append(pooled)
             if 'second_last' in layers:
-                layer_outputs['second_last'].append(hidden_states[-2].cpu())
+                pooled = hidden_states[-2].mean(dim=1).cpu()
+                layer_outputs['second_last'].append(pooled)
     
-    # Concatenate all outputs
+    # Concatenate all outputs (now they all have same shape)
     for layer in layers:
         if layer_outputs[layer]:
             layer_outputs[layer] = torch.cat(layer_outputs[layer], dim=0)

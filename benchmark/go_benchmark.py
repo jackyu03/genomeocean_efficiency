@@ -286,59 +286,62 @@ def run_benchmark(args):
             seqs_all = [seqs_all[i] for i in idx]
 
             for bs in args.batch_sizes:
-                try:
-                    warm = max(0, args.warmup)
-                    log.info(f"[{label} | mean tokens ~{mean_tokens} | BS={bs}] Warmup x{warm} ...")
-                    for _ in range(warm):
-                        sample = seqs_all[:bs]
-                        _ = embed_batch(model, tokenizer, sample, device=device, max_len=max_len)
-                        if device == "cuda":
-                            torch.cuda.synchronize()
-
-                    n_runs = max(1, math.floor(len(seqs_all) / bs))
-                    if args.max_batches is not None:
-                        n_runs = min(n_runs, args.max_batches)
-                    log.info(f"[{label} | BS={bs}] Timed runs: {n_runs}")
-
-                    if device == "cuda":
-                        torch.cuda.reset_peak_memory_stats()
-
-                    start = time.perf_counter()
-                    with EnergyMeter(gpu_index=0, interval_s=0.05) as em:
-                        n_tokens_total = 0
-                        n_seqs_total = 0
-                        for i in range(n_runs):
-                            batch = seqs_all[i*bs:(i+1)*bs]
-                            _ = embed_batch(model, tokenizer, batch, device=device, max_len=max_len)
+                # Repeat each condition multiple times for statistical confidence
+                for repeat_idx in range(args.num_repeats):
+                    try:
+                        warm = max(0, args.warmup)
+                        repeat_label = f"[{label} | mean tokens ~{mean_tokens} | BS={bs} | repeat {repeat_idx+1}/{args.num_repeats}]"
+                        log.info(f"{repeat_label} Warmup x{warm} ...")
+                        for _ in range(warm):
+                            sample = seqs_all[:bs]
+                            _ = embed_batch(model, tokenizer, sample, device=device, max_len=max_len)
                             if device == "cuda":
                                 torch.cuda.synchronize()
-                            toks = tokenize_lengths(tokenizer, batch, batch_size=bs, max_len=max_len)
-                            n_tokens_total += sum(toks)
-                            n_seqs_total += len(batch)
-                    end = time.perf_counter()
 
-                    elapsed = max(end - start, 1e-9)
-                    e2el_ms = (elapsed * 1000.0) / max(1, n_runs)
+                        n_runs = max(1, math.floor(len(seqs_all) / bs))
+                        if args.max_batches is not None:
+                            n_runs = min(n_runs, args.max_batches)
+                        log.info(f"[{label} | BS={bs}] Timed runs: {n_runs}")
 
-                    seqs_per_s = n_seqs_total / elapsed
-                    tokens_per_s = n_tokens_total / elapsed
+                        if device == "cuda":
+                            torch.cuda.reset_peak_memory_stats()
 
-                    peak_vram_gb = (torch.cuda.max_memory_reserved() / 1e9) if (device == "cuda") else None
+                        start = time.perf_counter()
+                        with EnergyMeter(gpu_index=0, interval_s=0.05) as em:
+                            n_tokens_total = 0
+                            n_seqs_total = 0
+                            for i in range(n_runs):
+                                batch = seqs_all[i*bs:(i+1)*bs]
+                                _ = embed_batch(model, tokenizer, batch, device=device, max_len=max_len)
+                                if device == "cuda":
+                                    torch.cuda.synchronize()
+                                toks = tokenize_lengths(tokenizer, batch, batch_size=bs, max_len=max_len)
+                                n_tokens_total += sum(toks)
+                                n_seqs_total += len(batch)
+                        end = time.perf_counter()
 
-                    tflops_per_s = (flops_seq_mean * seqs_per_s) / 1e12 if not math.isnan(flops_seq_mean) else float("nan")
-                    eff_seq_per_TFLOP = (seqs_per_s / (flops_seq_mean / 1e12)) if (flops_seq_mean and not math.isnan(flops_seq_mean)) else None
-                    eff_tokens_per_TFLOP = (tokens_per_s / (flops_seq_mean / 1e12)) if (flops_seq_mean and not math.isnan(flops_seq_mean)) else None
+                        elapsed = max(end - start, 1e-9)
+                        e2el_ms = (elapsed * 1000.0) / max(1, n_runs)
 
-                    if NVML_AVAILABLE and (em.kwh is not None):
-                        avg_power_W = (em.kwh * 3_600_000.0) / elapsed
-                        tokens_per_watt = tokens_per_s / avg_power_W if avg_power_W > 0 else None
-                        energy_kWh = em.kwh
-                    else:
-                        avg_power_W = None
-                        tokens_per_watt = None
-                        energy_kWh = None
+                        seqs_per_s = n_seqs_total / elapsed
+                        tokens_per_s = n_tokens_total / elapsed
 
-                    row = {
+                        peak_vram_gb = (torch.cuda.max_memory_reserved() / 1e9) if (device == "cuda") else None
+
+                        tflops_per_s = (flops_seq_mean * seqs_per_s) / 1e12 if not math.isnan(flops_seq_mean) else float("nan")
+                        eff_seq_per_TFLOP = (seqs_per_s / (flops_seq_mean / 1e12)) if (flops_seq_mean and not math.isnan(flops_seq_mean)) else None
+                        eff_tokens_per_TFLOP = (tokens_per_s / (flops_seq_mean / 1e12)) if (flops_seq_mean and not math.isnan(flops_seq_mean)) else None
+
+                        if NVML_AVAILABLE and (em.kwh is not None):
+                            avg_power_W = (em.kwh * 3_600_000.0) / elapsed
+                            tokens_per_watt = tokens_per_s / avg_power_W if avg_power_W > 0 else None
+                            energy_kWh = em.kwh
+                        else:
+                            avg_power_W = None
+                            tokens_per_watt = None
+                            energy_kWh = None
+
+                        row = {
                         "model": args.model,
                         "commit": commit,
                         "gpu_name": gpu_name,
@@ -359,29 +362,29 @@ def run_benchmark(args):
                         "peak_vram_GB": None if peak_vram_gb is None else round(peak_vram_gb, 3),
                         "energy_kWh": None if energy_kWh is None else round(energy_kWh, 6),
                         "avg_power_W": None if avg_power_W is None else round(avg_power_W, 2),
-                        "flops_per_seq": None if (flops_seq_mean is None or math.isnan(flops_seq_mean)) else int(flops_seq_mean),
-                        "TFLOPs_per_s": None if (tflops_per_s is None or math.isnan(tflops_per_s)) else round(tflops_per_s, 3),
-                        "eff_seq_per_TFLOP": None if (eff_seq_per_TFLOP is None) else round(eff_seq_per_TFLOP, 6),
-                        "eff_tokens_per_TFLOP": None if (eff_tokens_per_TFLOP is None) else round(eff_tokens_per_TFLOP, 6),
-                        "tokens_per_watt": None if (tokens_per_watt is None) else round(tokens_per_watt, 6),
-                    }
-                    writer.writerow(row); f_out.flush()
-                    log.info(
-                        f"[RESULT] {label}, BS={bs} | "
-                        f"E2EL={row['E2EL_ms']} ms | seq/s={row['seqs_per_s']} | tok/s={row['tokens_per_s']} | "
-                        f"VRAM={row['peak_vram_GB']} GB | kWh={row['energy_kWh']} | W={row['avg_power_W']} | "
-                        f"TFLOPs/s={row['TFLOPs_per_s']} | tok/W={row['tokens_per_watt']}"
-                    )
-                except RuntimeError as e:
-                    msg = str(e).lower()
-                    if "out of memory" in msg:
-                        log.error(f"OOM at {label}, BS={bs}; skipping this combo.")
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-                        continue
-                    else:
-                        log.exception(f"Failure at {label}, BS={bs}; skipping this combo.")
-                        continue
+                            "flops_per_seq": None if (flops_seq_mean is None or math.isnan(flops_seq_mean)) else int(flops_seq_mean),
+                            "TFLOPs_per_s": None if (tflops_per_s is None or math.isnan(tflops_per_s)) else round(tflops_per_s, 3),
+                            "eff_seq_per_TFLOP": None if (eff_seq_per_TFLOP is None) else round(eff_seq_per_TFLOP, 6),
+                            "eff_tokens_per_TFLOP": None if (eff_tokens_per_TFLOP is None) else round(eff_tokens_per_TFLOP, 6),
+                            "tokens_per_watt": None if (tokens_per_watt is None) else round(tokens_per_watt, 6),
+                        }
+                        writer.writerow(row); f_out.flush()
+                        log.info(
+                            f"[RESULT] {label}, BS={bs}, repeat={repeat_idx+1} | "
+                            f"E2EL={row['E2EL_ms']} ms | seq/s={row['seqs_per_s']} | tok/s={row['tokens_per_s']} | "
+                            f"VRAM={row['peak_vram_GB']} GB | kWh={row['energy_kWh']} | W={row['avg_power_W']} | "
+                            f"TFLOPs/s={row['TFLOPs_per_s']} | tok/W={row['tokens_per_watt']}"
+                        )
+                    except RuntimeError as e:
+                        msg = str(e).lower()
+                        if "out of memory" in msg:
+                            log.error(f"OOM at {label}, BS={bs}; skipping this combo.")
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                            continue
+                        else:
+                            log.exception(f"Failure at {label}, BS={bs}; skipping this combo.")
+                            continue
 
     finally:
         f_out.close()
@@ -418,6 +421,7 @@ def parse_args():
     p.add_argument("--batch-sizes", type=int, nargs="+", default=[1,4,8], help="Batch sizes to test")
     p.add_argument("--warmup", type=int, default=3, help="Warmup iterations per condition × batch")
     p.add_argument("--max-batches", type=int, default=None, help="Optional cap on timed batches per condition × batch")
+    p.add_argument("--num-repeats", type=int, default=1, help="Number of times to repeat each condition for statistical confidence")
     p.add_argument("--outdir", type=str, default="./results", help="Output directory for CSV/JSON")
     return p.parse_args()
 
