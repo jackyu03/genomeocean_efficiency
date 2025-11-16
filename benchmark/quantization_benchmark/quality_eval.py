@@ -40,13 +40,16 @@ def extract_layer_outputs(model, tokenizer, sequences: List[str],
     
     with torch.no_grad():
         for seq in sequences:
-            inputs = tokenizer(
-                seq,
-                padding=True,
-                truncation=True,
-                max_length=max_len,
-                return_tensors="pt"
-            )
+            # Only set truncation and max_length if max_len is provided
+            tokenizer_kwargs = {
+                "padding": True,
+                "return_tensors": "pt"
+            }
+            if max_len is not None:
+                tokenizer_kwargs["truncation"] = True
+                tokenizer_kwargs["max_length"] = max_len
+            
+            inputs = tokenizer(seq, **tokenizer_kwargs)
             inputs = {k: v.to(device) for k, v in inputs.items() if isinstance(v, torch.Tensor)}
             inputs.pop('token_type_ids', None)
             

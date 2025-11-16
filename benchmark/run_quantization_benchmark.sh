@@ -27,9 +27,18 @@ mkdir -p ./results/logs
 nvidia-smi
 echo "Running on GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader)"
 
-# Common benchmark parameters
+# ============================================
+# BENCHMARK CONFIGURATION - EDIT THESE
+# ============================================
+
+# Dataset and model
 CSV_FILE="dataset/arc53_2000_seq_50k.csv"
 MODEL="DOEJGI/GenomeOcean-100M"
+
+# Sequence length to test (in base pairs)
+TRUNCATE_BP="10000"
+
+# Benchmark parameters
 DEVICE="cuda"
 PRECISION="float16"
 SAMPLES_PER_COND=1000
@@ -40,8 +49,7 @@ OUTDIR="./results"
 # Quantization modes to test
 QUANT_MODES=("standard" "8bit" "4bit_nf4" "4bit_fp4" "4bit_nf4_double")
 
-# Test configurations: truncation by base pairs (focused on 10k bp sequences)
-TRUNCATE_BP="10000"
+# ============================================
 
 echo "Testing quantization modes: ${QUANT_MODES[@]}"
 echo "Truncation target: $TRUNCATE_BP bp"

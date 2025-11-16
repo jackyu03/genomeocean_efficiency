@@ -129,7 +129,15 @@ def main():
                 print(f"Using {len(test_sequences)} test sequences")
                 print(f"Device: {device}")
                 
-                from model_to_benchmark import load_model
+                from model_to_benchmark import load_model, get_max_length
+                from transformers import AutoConfig, AutoTokenizer
+                
+                # Get max_len from model config
+                config = AutoConfig.from_pretrained(args.model_name, trust_remote_code=True)
+                tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=True)
+                max_len = get_max_length(config, tokenizer)
+                
+                print(f"Using max_length: {max_len}")
                 
                 quality_results = evaluate_quantization_quality(
                     model_loader_func=load_model,
@@ -138,7 +146,8 @@ def main():
                     model_name=args.model_name,
                     device=device,
                     dtype=dtype,
-                    output_dir=args.output_dir
+                    output_dir=args.output_dir,
+                    max_len=max_len
                 )
                 
                 print("\n[OK] Quality evaluation completed successfully")
