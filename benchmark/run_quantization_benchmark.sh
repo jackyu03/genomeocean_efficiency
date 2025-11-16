@@ -76,30 +76,17 @@ done
 echo ""
 echo "Quantization benchmark completed at $(date)"
 
-# Combine results and run analysis
-TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
-COMBINED_CSV="$OUTDIR/quantization_benchmark_combined_$TIMESTAMP.csv"
-ANALYSIS_DIR="$OUTDIR/analysis_$TIMESTAMP"
+# Run complete analysis
+ANALYSIS_DIR="$OUTDIR/analysis"
 
-# Combine all CSV files
-find "$OUTDIR" -name "benchmark_*.csv" -type f | head -10 | while read file; do
-    if [ ! -f "$COMBINED_CSV" ]; then
-        cp "$file" "$COMBINED_CSV"
-    else
-        tail -n +2 "$file" >> "$COMBINED_CSV"
-    fi
-done
+echo ""
+echo "Running complete analysis (performance + quality + visualizations)..."
+python scripts/run_complete_analysis.py \
+    --results-dir "$OUTDIR" \
+    --output-dir "$ANALYSIS_DIR" \
+    --model-name "$MODEL" \
+    --num-test-sequences 50
 
-if [ -f "$COMBINED_CSV" ]; then
-    echo "Combined results: $COMBINED_CSV"
-    
-    # Run analysis
-    mkdir -p "$ANALYSIS_DIR"
-    python analyze_quantization_results.py \
-        --results-dir "$OUTDIR" \
-        --output-dir "$ANALYSIS_DIR"
-    
-    echo "Analysis complete: $ANALYSIS_DIR"
-else
-    echo "No results to combine"
-fi
+echo ""
+echo "Analysis complete!"
+echo "Results saved to: $ANALYSIS_DIR"
