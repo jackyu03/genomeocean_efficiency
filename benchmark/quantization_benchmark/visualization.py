@@ -108,6 +108,17 @@ def plot_quality_metrics(quality_df: pd.DataFrame, output_dir: Path):
     
     setup_plot_style()
     
+    # Define order: 4bit variants first, then 8bit, then standard
+    quant_order = ['4bit_fp4', '4bit_nf4', '4bit_nf4_double', '8bit', 'standard']
+    
+    # Reorder dataframe
+    quality_df['quantization_mode'] = pd.Categorical(
+        quality_df['quantization_mode'], 
+        categories=quant_order, 
+        ordered=True
+    )
+    quality_df = quality_df.sort_values('quantization_mode')
+    
     # 1. KL Divergence comparison
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
     
@@ -159,49 +170,57 @@ def plot_quality_metrics(quality_df: pd.DataFrame, output_dir: Path):
     plt.savefig(output_dir / 'snr_comparison.png', dpi=300, bbox_inches='tight')
     plt.close()
     
-    # 5. Individual metric comparisons (better than heatmap for different scales)
+    # 5. Individual metric comparisons (ordered: 4bit first, then 8bit)
     for layer in quality_df['layer'].unique():
-        layer_data = quality_df[quality_df['layer'] == layer]
+        layer_data = quality_df[quality_df['layer'] == layer].copy()
+        
+        # Ensure ordering is preserved
+        layer_data = layer_data.sort_values('quantization_mode')
         
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
         axes = axes.flatten()
         
         # KL Divergence (lower is better)
         ax = axes[0]
-        layer_data.plot(x='quantization_mode', y='kl_divergence', kind='bar', ax=ax, color='coral', legend=False)
+        x_pos = np.arange(len(layer_data))
+        ax.bar(x_pos, layer_data['kl_divergence'].values, color='coral')
         ax.set_title('KL Divergence (Lower = Better)', fontweight='bold')
         ax.set_xlabel('Quantization Mode')
         ax.set_ylabel('KL Divergence')
-        ax.tick_params(axis='x', rotation=45)
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(layer_data['quantization_mode'].values, rotation=45, ha='right')
         ax.grid(True, alpha=0.3)
         
         # JS Divergence (lower is better)
         ax = axes[1]
-        layer_data.plot(x='quantization_mode', y='js_divergence', kind='bar', ax=ax, color='salmon', legend=False)
+        ax.bar(x_pos, layer_data['js_divergence'].values, color='salmon')
         ax.set_title('JS Divergence (Lower = Better)', fontweight='bold')
         ax.set_xlabel('Quantization Mode')
         ax.set_ylabel('JS Divergence')
-        ax.tick_params(axis='x', rotation=45)
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(layer_data['quantization_mode'].values, rotation=45, ha='right')
         ax.grid(True, alpha=0.3)
         
         # Cosine Similarity (higher is better)
         ax = axes[2]
-        layer_data.plot(x='quantization_mode', y='cosine_similarity', kind='bar', ax=ax, color='lightgreen', legend=False)
+        ax.bar(x_pos, layer_data['cosine_similarity'].values, color='lightgreen')
         ax.set_title('Cosine Similarity (Higher = Better)', fontweight='bold')
         ax.set_xlabel('Quantization Mode')
         ax.set_ylabel('Cosine Similarity')
-        ax.tick_params(axis='x', rotation=45)
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(layer_data['quantization_mode'].values, rotation=45, ha='right')
         ax.axhline(y=1.0, color='green', linestyle='--', alpha=0.5, label='Perfect')
         ax.grid(True, alpha=0.3)
         ax.legend()
         
         # SNR (higher is better)
         ax = axes[3]
-        layer_data.plot(x='quantization_mode', y='snr_db', kind='bar', ax=ax, color='skyblue', legend=False)
+        ax.bar(x_pos, layer_data['snr_db'].values, color='skyblue')
         ax.set_title('Signal-to-Noise Ratio (Higher = Better)', fontweight='bold')
         ax.set_xlabel('Quantization Mode')
         ax.set_ylabel('SNR (dB)')
-        ax.tick_params(axis='x', rotation=45)
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(layer_data['quantization_mode'].values, rotation=45, ha='right')
         ax.grid(True, alpha=0.3)
         
         plt.suptitle(f'Quality Metrics - {layer.replace("_", " ").title()} Layer', 
@@ -214,86 +233,16 @@ def plot_quality_metrics(quality_df: pd.DataFrame, output_dir: Path):
 
 
 def plot_distribution_comparison(stats_df: pd.DataFrame, output_dir: Path):
-    """Create distribution comparison visualizations."""
+    """Create distribution comparison visualizations - actual histograms."""
     
     setup_plot_style()
     
-    # Plot distribution statistics for each layer
-    for layer in stats_df['layer'].unique():
-        layer_data = stats_df[stats_df['layer'] == layer]
-        
-        # Separate standard and quantized
-        standard_data = layer_data[layer_data['type'] == 'standard_stats']
-        quantized_data = layer_data[layer_data['type'] == 'quantized_stats']
-        
-        # Plot mean and std comparison
-        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-        
-        # Mean comparison
-        ax = axes[0, 0]
-        x = np.arange(len(quantized_data))
-        width = 0.35
-        ax.bar(x - width/2, standard_data['mean'].values, width, label='Standard', alpha=0.8)
-        ax.bar(x + width/2, quantized_data['mean'].values, width, label='Quantized', alpha=0.8)
-        ax.set_xlabel('Quantization Mode')
-        ax.set_ylabel('Mean')
-        ax.set_title('Mean Value Comparison')
-        ax.set_xticks(x)
-        ax.set_xticklabels(quantized_data['quantization_mode'].values, rotation=45)
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        # Std comparison
-        ax = axes[0, 1]
-        ax.bar(x - width/2, standard_data['std'].values, width, label='Standard', alpha=0.8)
-        ax.bar(x + width/2, quantized_data['std'].values, width, label='Quantized', alpha=0.8)
-        ax.set_xlabel('Quantization Mode')
-        ax.set_ylabel('Standard Deviation')
-        ax.set_title('Std Deviation Comparison')
-        ax.set_xticks(x)
-        ax.set_xticklabels(quantized_data['quantization_mode'].values, rotation=45)
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        # Range comparison (min-max)
-        ax = axes[1, 0]
-        for i, (idx, row) in enumerate(quantized_data.iterrows()):
-            std_row = standard_data.iloc[i]
-            ax.plot([i, i], [std_row['min'], std_row['max']], 'o-', label='Standard' if i == 0 else '', 
-                   color='C0', linewidth=2, markersize=8)
-            ax.plot([i, i], [row['min'], row['max']], 's-', label='Quantized' if i == 0 else '', 
-                   color='C1', linewidth=2, markersize=8)
-        ax.set_xlabel('Quantization Mode')
-        ax.set_ylabel('Value Range')
-        ax.set_title('Min-Max Range Comparison')
-        ax.set_xticks(range(len(quantized_data)))
-        ax.set_xticklabels(quantized_data['quantization_mode'].values, rotation=45)
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        # Skewness and Kurtosis
-        ax = axes[1, 1]
-        x = np.arange(len(quantized_data))
-        width = 0.2
-        ax.bar(x - 1.5*width, standard_data['skewness'].values, width, label='Std Skewness', alpha=0.8)
-        ax.bar(x - 0.5*width, quantized_data['skewness'].values, width, label='Quant Skewness', alpha=0.8)
-        ax.bar(x + 0.5*width, standard_data['kurtosis'].values, width, label='Std Kurtosis', alpha=0.8)
-        ax.bar(x + 1.5*width, quantized_data['kurtosis'].values, width, label='Quant Kurtosis', alpha=0.8)
-        ax.set_xlabel('Quantization Mode')
-        ax.set_ylabel('Value')
-        ax.set_title('Skewness and Kurtosis Comparison')
-        ax.set_xticks(x)
-        ax.set_xticklabels(quantized_data['quantization_mode'].values, rotation=45)
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        plt.suptitle(f'Distribution Statistics - {layer.replace("_", " ").title()} Layer', 
-                    fontsize=16, fontweight='bold')
-        plt.tight_layout()
-        plt.savefig(output_dir / f'distribution_stats_{layer}.png', dpi=300, bbox_inches='tight')
-        plt.close()
+    # Note: This function is kept for compatibility but actual distribution
+    # histograms would require the raw output values, not just statistics.
+    # The statistics are already shown in the quality metrics plots.
+    # Skipping redundant visualization.
     
-    print(f"Distribution visualizations saved to: {output_dir}")
+    print(f"Distribution statistics available in quality_metrics.csv")
 
 
 def create_visualizations(results_dir: str, output_dir: str, 

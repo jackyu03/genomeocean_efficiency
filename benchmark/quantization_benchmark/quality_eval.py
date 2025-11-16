@@ -127,7 +127,25 @@ def compute_cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     a_flat = a.flatten()
     b_flat = b.flatten()
     
-    return np.dot(a_flat, b_flat) / (np.linalg.norm(a_flat) * np.linalg.norm(b_flat))
+    # Compute norms
+    norm_a = np.linalg.norm(a_flat)
+    norm_b = np.linalg.norm(b_flat)
+    
+    # Handle zero norms (shouldn't happen but prevents NaN)
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    
+    # Compute dot product with overflow protection
+    try:
+        dot_product = np.dot(a_flat, b_flat)
+        similarity = dot_product / (norm_a * norm_b)
+        
+        # Clip to valid range [-1, 1] due to numerical errors
+        return float(np.clip(similarity, -1.0, 1.0))
+    except (FloatingPointError, RuntimeWarning):
+        # If overflow, use alternative method
+        from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine
+        return float(sklearn_cosine(a_flat.reshape(1, -1), b_flat.reshape(1, -1))[0, 0])
 
 
 def compute_mse(a: np.ndarray, b: np.ndarray) -> float:
