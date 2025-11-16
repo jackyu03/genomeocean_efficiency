@@ -316,11 +316,28 @@ def evaluate_quantization_quality(model_loader_func,
                 quant_model, quant_tokenizer, test_sequences, device, max_len
             )
             
+            # Debug: Check output shapes and values
+            for layer_name in quantized_outputs.keys():
+                std_shape = standard_outputs[layer_name].shape
+                quant_shape = quantized_outputs[layer_name].shape
+                print(f"    {layer_name}: std shape={std_shape}, quant shape={quant_shape}")
+                
+                # Check if outputs are identical (shouldn't happen)
+                if torch.allclose(standard_outputs[layer_name], quantized_outputs[layer_name], atol=1e-6):
+                    print(f"    WARNING: {quant_mode} outputs are nearly identical to standard!")
+            
             # Compare with standard
             print(f"  Computing quality metrics...")
             comparison = compare_quantization_outputs(
                 standard_outputs, quantized_outputs, quant_mode
             )
+            
+            # Debug: Print computed metrics
+            for layer_name, metrics in comparison['layers'].items():
+                print(f"    {layer_name}: KL={metrics['kl_divergence']:.4f}, "
+                      f"JS={metrics['js_divergence']:.4f}, "
+                      f"cos_sim={metrics['cosine_similarity']:.4f}")
+            
             all_comparisons.append(comparison)
             
             # Clean up
@@ -329,6 +346,8 @@ def evaluate_quantization_quality(model_loader_func,
             
         except Exception as e:
             log.error(f"Failed to evaluate {quant_mode}: {e}")
+            import traceback
+            traceback.print_exc()
             continue
     
     # Save results

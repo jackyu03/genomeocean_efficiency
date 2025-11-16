@@ -159,25 +159,55 @@ def plot_quality_metrics(quality_df: pd.DataFrame, output_dir: Path):
     plt.savefig(output_dir / 'snr_comparison.png', dpi=300, bbox_inches='tight')
     plt.close()
     
-    # 5. Multi-metric heatmap
-    metrics_for_heatmap = ['kl_divergence', 'js_divergence', 'cosine_similarity', 'snr_db']
-    
+    # 5. Individual metric comparisons (better than heatmap for different scales)
     for layer in quality_df['layer'].unique():
         layer_data = quality_df[quality_df['layer'] == layer]
-        heatmap_data = layer_data[['quantization_mode'] + metrics_for_heatmap].set_index('quantization_mode')
         
-        # Normalize each metric to 0-1 scale for better visualization
-        heatmap_normalized = (heatmap_data - heatmap_data.min()) / (heatmap_data.max() - heatmap_data.min())
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        axes = axes.flatten()
         
-        plt.figure(figsize=(10, 6))
-        sns.heatmap(heatmap_normalized.T, annot=True, fmt='.3f', cmap='RdYlGn', 
-                   cbar_kws={'label': 'Normalized Score'})
-        plt.title(f'Quality Metrics Heatmap - {layer.replace("_", " ").title()} Layer', 
-                 fontsize=14, fontweight='bold')
-        plt.xlabel('Quantization Mode')
-        plt.ylabel('Metric')
+        # KL Divergence (lower is better)
+        ax = axes[0]
+        layer_data.plot(x='quantization_mode', y='kl_divergence', kind='bar', ax=ax, color='coral', legend=False)
+        ax.set_title('KL Divergence (Lower = Better)', fontweight='bold')
+        ax.set_xlabel('Quantization Mode')
+        ax.set_ylabel('KL Divergence')
+        ax.tick_params(axis='x', rotation=45)
+        ax.grid(True, alpha=0.3)
+        
+        # JS Divergence (lower is better)
+        ax = axes[1]
+        layer_data.plot(x='quantization_mode', y='js_divergence', kind='bar', ax=ax, color='salmon', legend=False)
+        ax.set_title('JS Divergence (Lower = Better)', fontweight='bold')
+        ax.set_xlabel('Quantization Mode')
+        ax.set_ylabel('JS Divergence')
+        ax.tick_params(axis='x', rotation=45)
+        ax.grid(True, alpha=0.3)
+        
+        # Cosine Similarity (higher is better)
+        ax = axes[2]
+        layer_data.plot(x='quantization_mode', y='cosine_similarity', kind='bar', ax=ax, color='lightgreen', legend=False)
+        ax.set_title('Cosine Similarity (Higher = Better)', fontweight='bold')
+        ax.set_xlabel('Quantization Mode')
+        ax.set_ylabel('Cosine Similarity')
+        ax.tick_params(axis='x', rotation=45)
+        ax.axhline(y=1.0, color='green', linestyle='--', alpha=0.5, label='Perfect')
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        
+        # SNR (higher is better)
+        ax = axes[3]
+        layer_data.plot(x='quantization_mode', y='snr_db', kind='bar', ax=ax, color='skyblue', legend=False)
+        ax.set_title('Signal-to-Noise Ratio (Higher = Better)', fontweight='bold')
+        ax.set_xlabel('Quantization Mode')
+        ax.set_ylabel('SNR (dB)')
+        ax.tick_params(axis='x', rotation=45)
+        ax.grid(True, alpha=0.3)
+        
+        plt.suptitle(f'Quality Metrics - {layer.replace("_", " ").title()} Layer', 
+                    fontsize=16, fontweight='bold')
         plt.tight_layout()
-        plt.savefig(output_dir / f'quality_heatmap_{layer}.png', dpi=300, bbox_inches='tight')
+        plt.savefig(output_dir / f'quality_metrics_{layer}.png', dpi=300, bbox_inches='tight')
         plt.close()
     
     print(f"Quality visualizations saved to: {output_dir}")
