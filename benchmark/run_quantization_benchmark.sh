@@ -95,7 +95,7 @@ python scripts/run_complete_analysis.py \
     --results-dir "$OUTDIR" \
     --output-dir "$ANALYSIS_DIR" \
     --model-name "$MODEL" \
-    --num-test-sequences 50
+    --num-test-sequences 500
 
 echo ""
 echo "Analysis complete!"
