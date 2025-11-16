@@ -116,6 +116,7 @@ def compute_js_divergence(p: np.ndarray, q: np.ndarray) -> float:
 def compute_cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     """
     Compute cosine similarity between two vectors/matrices.
+    Uses normalized vectors to avoid overflow.
     
     Args:
         a: First tensor
@@ -124,28 +125,32 @@ def compute_cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     Returns:
         Cosine similarity value
     """
-    a_flat = a.flatten()
-    b_flat = b.flatten()
+    a_flat = a.flatten().astype(np.float64)  # Use float64 for better precision
+    b_flat = b.flatten().astype(np.float64)
     
-    # Compute norms
-    norm_a = np.linalg.norm(a_flat)
-    norm_b = np.linalg.norm(b_flat)
+    # Compute norms with overflow protection
+    with np.errstate(over='ignore', invalid='ignore'):
+        norm_a = np.sqrt(np.sum(a_flat ** 2))
+        norm_b = np.sqrt(np.sum(b_flat ** 2))
     
-    # Handle zero norms (shouldn't happen but prevents NaN)
-    if norm_a == 0 or norm_b == 0:
+    # Handle zero or invalid norms
+    if not np.isfinite(norm_a) or not np.isfinite(norm_b) or norm_a == 0 or norm_b == 0:
         return 0.0
     
-    # Compute dot product with overflow protection
-    try:
-        dot_product = np.dot(a_flat, b_flat)
-        similarity = dot_product / (norm_a * norm_b)
-        
-        # Clip to valid range [-1, 1] due to numerical errors
-        return float(np.clip(similarity, -1.0, 1.0))
-    except (FloatingPointError, RuntimeWarning):
-        # If overflow, use alternative method
-        from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine
-        return float(sklearn_cosine(a_flat.reshape(1, -1), b_flat.reshape(1, -1))[0, 0])
+    # Normalize vectors first to avoid overflow in dot product
+    a_normalized = a_flat / norm_a
+    b_normalized = b_flat / norm_b
+    
+    # Compute similarity on normalized vectors
+    with np.errstate(over='ignore', invalid='ignore'):
+        similarity = np.sum(a_normalized * b_normalized)
+    
+    # Handle invalid results
+    if not np.isfinite(similarity):
+        return 0.0
+    
+    # Clip to valid range [-1, 1]
+    return float(np.clip(similarity, -1.0, 1.0))
 
 
 def compute_mse(a: np.ndarray, b: np.ndarray) -> float:
@@ -341,7 +346,14 @@ def evaluate_quantization_quality(model_loader_func,
             for layer_name in quantized_outputs.keys():
                 std_shape = standard_outputs[layer_name].shape
                 quant_shape = quantized_outputs[layer_name].shape
+                std_vals = standard_outputs[layer_name].numpy()
+                quant_vals = quantized_outputs[layer_name].numpy()
+                
                 print(f"    {layer_name}: std shape={std_shape}, quant shape={quant_shape}")
+                print(f"      std range=[{std_vals.min():.3f}, {std_vals.max():.3f}], "
+                      f"mean={std_vals.mean():.3f}, std={std_vals.std():.3f}")
+                print(f"      quant range=[{quant_vals.min():.3f}, {quant_vals.max():.3f}], "
+                      f"mean={quant_vals.mean():.3f}, std={quant_vals.std():.3f}")
                 
                 # Check if outputs are identical (shouldn't happen)
                 if torch.allclose(standard_outputs[layer_name], quantized_outputs[layer_name], atol=1e-6):
