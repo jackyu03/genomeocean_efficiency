@@ -7,8 +7,8 @@
 #SBATCH -q es_normal
 #SBATCH --gres=gpu:A40:1
 #SBATCH --job-name=quant_benchmark
-#SBATCH --output=./results/logs/quant_benchmark_%j.out
-#SBATCH --error=./results/logs/quant_benchmark_%j.err
+#SBATCH --output=/global/scratch/users/mutianyu2026/genomeocean_efficiency/benchmark/results/logs/quant_benchmark_%j.log
+#SBATCH --error=/global/scratch/users/mutianyu2026/genomeocean_efficiency/benchmark/results/logs/quant_benchmark_%j.log
 
 # Quantization benchmark script
 # Tests all quantization modes: standard, 8bit, 4bit variants
@@ -17,7 +17,7 @@
 cd /global/scratch/users/mutianyu2026/genomeocean_efficiency/benchmark/
 
 # Activate conda environment
-source ~/anaconda3/etc/profile.d/conda.sh
+source /global/scratch/users/mutianyu2026/conda/etc/profile.d/conda.sh
 conda activate GO
 
 # Create results and logs directories
@@ -33,7 +33,7 @@ MODEL="DOEJGI/GenomeOcean-100M"
 DEVICE="cuda"
 PRECISION="float16"
 SAMPLES_PER_COND=1000
-BATCH_SIZES="1 4 8"
+BATCH_SIZES="4"
 WARMUP=3
 OUTDIR="./results"
 
