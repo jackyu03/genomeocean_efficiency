@@ -22,6 +22,7 @@ def extract_layer_outputs(model, tokenizer, sequences: List[str],
                           layers: List[str] = ['last', 'second_last']) -> Dict[str, torch.Tensor]:
     """
     Extract outputs from specified layers of the model.
+    Uses mean pooling over sequence dimension for each sequence.
     
     Args:
         model: The model to extract from
@@ -32,7 +33,7 @@ def extract_layer_outputs(model, tokenizer, sequences: List[str],
         layers: Which layers to extract ('last', 'second_last')
         
     Returns:
-        Dictionary mapping layer names to output tensors
+        Dictionary mapping layer names to output tensors of shape (num_sequences, hidden_dim)
     """
     
     model.eval()
@@ -56,16 +57,17 @@ def extract_layer_outputs(model, tokenizer, sequences: List[str],
             outputs = model(**inputs, output_hidden_states=True, return_dict=True)
             hidden_states = outputs.hidden_states
             
-            # Extract requested layers and take mean pooling to get fixed-size representation
+            # Extract requested layers and mean pool over sequence length
+            # This gives us one vector per sequence (hidden_dim,)
             if 'last' in layers:
-                # Mean pool over sequence length to get (batch_size, hidden_dim)
-                pooled = hidden_states[-1].mean(dim=1).cpu()
+                # Mean pool over sequence length: (seq_len, hidden_dim) -> (hidden_dim,)
+                pooled = hidden_states[-1].mean(dim=1).cpu()  # (1, hidden_dim)
                 layer_outputs['last'].append(pooled)
             if 'second_last' in layers:
-                pooled = hidden_states[-2].mean(dim=1).cpu()
+                pooled = hidden_states[-2].mean(dim=1).cpu()  # (1, hidden_dim)
                 layer_outputs['second_last'].append(pooled)
     
-    # Concatenate all outputs (now they all have same shape)
+    # Concatenate all outputs: list of (1, hidden_dim) -> (num_sequences, hidden_dim)
     for layer in layers:
         if layer_outputs[layer]:
             layer_outputs[layer] = torch.cat(layer_outputs[layer], dim=0)
@@ -213,15 +215,16 @@ def compare_quantization_outputs(standard_outputs: Dict[str, torch.Tensor],
                                 quantized_outputs: Dict[str, torch.Tensor],
                                 quant_mode: str) -> Dict:
     """
-    Compare outputs between standard and quantized models.
+    Compare outputs between standard and quantized models using pairwise comparisons.
+    Computes metrics for each sequence individually, then averages.
     
     Args:
-        standard_outputs: Outputs from standard (non-quantized) model
-        quantized_outputs: Outputs from quantized model
+        standard_outputs: Outputs from standard (non-quantized) model, shape (num_sequences, hidden_dim)
+        quantized_outputs: Outputs from quantized model, shape (num_sequences, hidden_dim)
         quant_mode: Name of quantization mode
         
     Returns:
-        Dictionary of comparison metrics
+        Dictionary of comparison metrics (averaged across sequences)
     """
     
     comparison = {
@@ -233,37 +236,82 @@ def compare_quantization_outputs(standard_outputs: Dict[str, torch.Tensor],
         if layer_name not in quantized_outputs:
             continue
         
-        std_out = standard_outputs[layer_name].numpy()
-        quant_out = quantized_outputs[layer_name].numpy()
+        std_out = standard_outputs[layer_name].numpy()  # (num_sequences, hidden_dim)
+        quant_out = quantized_outputs[layer_name].numpy()  # (num_sequences, hidden_dim)
         
         # Ensure same shape
         if std_out.shape != quant_out.shape:
             log.warning(f"Shape mismatch for {layer_name}: {std_out.shape} vs {quant_out.shape}")
             continue
         
-        # Compute distribution histograms for KL/JS divergence
-        std_hist, bins = np.histogram(std_out.flatten(), bins=100, density=True)
-        quant_hist, _ = np.histogram(quant_out.flatten(), bins=bins, density=True)
+        # Pairwise comparisons: compute metrics for each sequence, then average
+        num_sequences = std_out.shape[0]
         
-        # Normalize histograms
-        std_hist = std_hist / (std_hist.sum() + 1e-10)
-        quant_hist = quant_hist / (quant_hist.sum() + 1e-10)
+        kl_divs = []
+        js_divs = []
+        cosine_sims = []
+        mses = []
+        maes = []
+        snrs = []
+        correlations = []
+        
+        for i in range(num_sequences):
+            std_seq = std_out[i]  # (hidden_dim,)
+            quant_seq = quant_out[i]  # (hidden_dim,)
+            
+            # Compute histogram-based divergence metrics for this sequence pair
+            std_hist, bins = np.histogram(std_seq, bins=50, density=True)
+            quant_hist, _ = np.histogram(quant_seq, bins=bins, density=True)
+            
+            # Normalize histograms
+            std_hist = std_hist / (std_hist.sum() + 1e-10)
+            quant_hist = quant_hist / (quant_hist.sum() + 1e-10)
+            
+            kl_divs.append(compute_kl_divergence(std_hist, quant_hist))
+            js_divs.append(compute_js_divergence(std_hist, quant_hist))
+            
+            # Compute other similarity metrics
+            cosine_sims.append(compute_cosine_similarity(std_seq, quant_seq))
+            mses.append(compute_mse(std_seq, quant_seq))
+            maes.append(compute_mae(std_seq, quant_seq))
+            snrs.append(compute_snr(std_seq, quant_seq))
+            
+            # Compute correlation with error handling
+            try:
+                corr_matrix = np.corrcoef(std_seq, quant_seq)
+                corr_value = corr_matrix[0, 1]
+                # Handle NaN (can occur if std is zero)
+                if np.isnan(corr_value):
+                    corr_value = 0.0
+                correlations.append(float(corr_value))
+            except:
+                correlations.append(0.0)
+        
+        # Average metrics across all sequences
+        # Filter out inf/nan values before averaging
+        finite_snrs = [s for s in snrs if np.isfinite(s)]
+        finite_kl_divs = [k for k in kl_divs if np.isfinite(k)]
+        finite_js_divs = [j for j in js_divs if np.isfinite(j)]
+        
+        avg_kl = float(np.mean(finite_kl_divs)) if finite_kl_divs else float('inf')
+        avg_js = float(np.mean(finite_js_divs)) if finite_js_divs else float('inf')
+        avg_cosine = float(np.mean(cosine_sims))
+        avg_mse = float(np.mean(mses))
+        avg_mae = float(np.mean(maes))
+        avg_snr = float(np.mean(finite_snrs)) if finite_snrs else float('inf')
+        avg_corr = float(np.mean(correlations))
         
         layer_metrics = {
-            # Divergence metrics
-            'kl_divergence': compute_kl_divergence(std_hist, quant_hist),
-            'js_divergence': compute_js_divergence(std_hist, quant_hist),
+            # All metrics are pairwise (averaged across sequences)
+            'kl_divergence': avg_kl,
+            'js_divergence': avg_js,
+            'cosine_similarity': avg_cosine,
+            'mse': avg_mse,
+            'mae': avg_mae,
+            'snr_db': avg_snr,
+            'pearson_correlation': avg_corr,
             
-            # Similarity metrics
-            'cosine_similarity': compute_cosine_similarity(std_out, quant_out),
-            'mse': compute_mse(std_out, quant_out),
-            'mae': compute_mae(std_out, quant_out),
-            'snr_db': compute_snr(std_out, quant_out),
-            
-            # Correlation
-            'pearson_correlation': float(np.corrcoef(std_out.flatten(), quant_out.flatten())[0, 1]),
-            
-            # Distribution statistics
+            # Distribution statistics (aggregated for reference)
             'standard_stats': analyze_distribution_statistics(std_out),
             'quantized_stats': analyze_distribution_statistics(quant_out)
         }
