@@ -24,10 +24,10 @@ echo "Start time: $(date)"
 echo ""
 
 # Configuration
-MODEL_NAME="DOEJGI/GenomeOcean-100M"
-OUTPUT_DIR="./results/quality_eval_$(date +%Y%m%d_%H%M%S)"
+MODEL_NAME="DOEJGI/GenomeOcean-4B"
+OUTPUT_DIR="./results/4B/quality_eval_$(date +%Y%m%d_%H%M%S)"
 DATASET_FILE="dataset/arc53_2000_seq_50k.csv"
-NUM_SEQUENCES=500
+NUM_SEQUENCES=100
 
 # Quantization modes to evaluate
 QUANT_MODES="standard int8 int4 nf4 fp4"
