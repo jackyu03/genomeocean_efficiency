@@ -1,12 +1,14 @@
 #!/bin/bash
-#SBATCH --job-name=quality_eval
-#SBATCH --output=logs/quality_eval_%j.out
-#SBATCH --error=logs/quality_eval_%j.err
-#SBATCH --time=02:00:00
-#SBATCH --partition=gpu
-#SBATCH --gres=gpu:1
-#SBATCH --mem=32G
-#SBATCH --cpus-per-task=4
+#SBATCH -N 1
+#SBATCH -p es1
+#SBATCH -A pc_jgiga
+#SBATCH -t 12:00:00
+#SBATCH --ntasks=8
+#SBATCH -q es_normal
+#SBATCH --gres=gpu:A40:1
+#SBATCH --job-name=quant_eval
+#SBATCH --output=/global/scratch/users/mutianyu2026/genomeocean_efficiency/benchmark/results/logs/quant_eval_%j.log
+#SBATCH --error=/global/scratch/users/mutianyu2026/genomeocean_efficiency/benchmark/results/logs/quant_eval_%j.log
 
 # Quality Evaluation Only - Skip Performance Benchmarking
 # This script runs only the quality evaluation comparing quantized vs standard models
