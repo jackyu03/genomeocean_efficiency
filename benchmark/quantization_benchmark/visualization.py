@@ -17,7 +17,7 @@ import torch
 def setup_plot_style():
     """Set up consistent plotting style."""
     plt.style.use('default')
-    sns.set_palette("husl")
+    sns.set_palette("tab10")
     plt.rcParams['figure.figsize'] = (12, 8)
     plt.rcParams['font.size'] = 11
     plt.rcParams['axes.grid'] = True
