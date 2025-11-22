@@ -32,7 +32,7 @@ DATASET_FILE="dataset/arc53_2000_seq_50k.csv"
 NUM_SEQUENCES=100
 
 # Quantization modes to evaluate
-QUANT_MODES="standard int8 int4 nf4 fp4"
+QUANT_MODES="standard int8 4bit_int4 4bit_nf4 4bit_fp4 4bit_nf4_double"
 
 echo "Configuration:"
 echo "  Model: $MODEL_NAME"

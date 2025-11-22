@@ -48,7 +48,7 @@ def main():
         "--quantization-modes",
         type=str,
         nargs="+",
-        default=["standard", "int8", "int4", "nf4", "fp4"],
+        default=["standard", "int8", "4bit_int4", "4bit_nf4", "4bit_fp4", "4bit_nf4_double"],
         help="Quantization modes to evaluate"
     )
     parser.add_argument(

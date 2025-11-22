@@ -47,7 +47,7 @@ WARMUP=3
 OUTDIR="./results"
 
 # Quantization modes to test
-QUANT_MODES=("standard" "8bit" "4bit_nf4" "4bit_fp4" "4bit_nf4_double")
+QUANT_MODES=("standard" "8bit" "4bit_int4" "4bit_nf4" "4bit_fp4" "4bit_nf4_double")
 
 # ============================================
 

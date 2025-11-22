@@ -28,6 +28,27 @@ def load_model_standard(model_name: str, device: str, dtype: torch.dtype):
     
     return model, tokenizer, config
 
+def load_model_4bit_int4(model_name: str, device: str, dtype: torch.dtype):
+    """4-bit quantized model loading with BitsAndBytesConfig."""
+    log.info(f"Loading model (4-bit INT4 quantized): {model_name}")
+    
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+    
+    quantization_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=dtype,
+        bnb_4bit_use_double_quant=False,
+        bnb_4bit_quant_type="int4" 
+    )
+    
+    model = AutoModel.from_pretrained(
+        model_name,
+        quantization_config=quantization_config,
+        device_map="auto" if device == "cuda" else None,
+        trust_remote_code=True
+    )
+    return model, tokenizer, config
 
 def load_model_4bit(model_name: str, device: str, dtype: torch.dtype):
     """4-bit quantized model loading with BitsAndBytesConfig."""
@@ -134,6 +155,7 @@ def load_model(model_name: str, device: str, dtype: torch.dtype):
     Set QUANT_MODE to one of:
     - "standard" (default): No quantization
     - "8bit": 8-bit quantization
+    - "4bit_int4": 4-bit INT4 quantization
     - "4bit_nf4": 4-bit NF4 quantization
     - "4bit_fp4": 4-bit FP4 quantization  
     - "4bit_nf4_double": 4-bit NF4 with double quantization
@@ -151,6 +173,8 @@ def load_model(model_name: str, device: str, dtype: torch.dtype):
     
     if quant_mode == "8bit":
         return load_model_8bit(model_name, device, dtype)
+    elif quant_mode == "4bit_int4":
+        return load_model_4bit_int4(model_name, device, dtype)  
     elif quant_mode == "4bit_nf4":
         return load_model_4bit(model_name, device, dtype)
     elif quant_mode == "4bit_fp4":
