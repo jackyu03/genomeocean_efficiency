@@ -24,6 +24,7 @@ UMAP_DIM=10
 DBSCAN_EPS=0.5
 DBSCAN_MIN_SAMPLES=5
 MAX_LEN=5000
+N_GENOMES=50
 
 cd /global/scratch/users/mutianyu2026/genomeocean_efficiency/benchmark/ || exit
 
@@ -44,6 +45,7 @@ python run_full_benchmark.py \
     --dbscan-eps $DBSCAN_EPS \
     --dbscan-min-samples $DBSCAN_MIN_SAMPLES \
     --batch-size 8 \
+    --n-genomes $N_GENOMES \
     --device cuda
 
 echo "Benchmark finished at $(date)"

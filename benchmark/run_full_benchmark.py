@@ -134,6 +134,7 @@ def main():
     parser.add_argument("--outdir", type=str, default="./results_full", help="Base output dir")
     parser.add_argument("--max-len", type=int, default=5000, help="Max seq length")
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size for inference")
+    parser.add_argument("--n-genomes", type=int, default=None, help="Number of genomes to use (top N from CSV)")
     
     # Binning Params
     parser.add_argument("--umap-dim", type=int, default=10)
@@ -149,8 +150,24 @@ def main():
     # 1. Load Data
     log.info(f"Loading data from {args.csv}...")
     df = pd.read_csv(args.csv)
+    
+    # Validate columns
+    required_cols = {"genome_id", "fragment_id", "seq"}
+    if not required_cols.issubset(df.columns):
+        raise ValueError(f"CSV must contain columns: {required_cols}. Found: {df.columns.tolist()}")
+
+    # Filter by number of genomes if requested
+    if args.n_genomes is not None:
+        unique_genomes = df["genome_id"].unique()
+        if len(unique_genomes) > args.n_genomes:
+            selected_genomes = unique_genomes[:args.n_genomes]
+            df = df[df["genome_id"].isin(selected_genomes)]
+            log.info(f"Filtered dataset to top {args.n_genomes} genomes. Total sequences: {len(df)}")
+        else:
+            log.info(f"Requested {args.n_genomes} genomes but found only {len(unique_genomes)}. Using all.")
+
     sequences = df["seq"].tolist()
-    genome_ids = df["genome_id"].tolist() if "genome_id" in df.columns else ["unknown"] * len(df)
+    genome_ids = df["genome_id"].tolist() # This is now the clean ground truth (e.g. GCA_123.1)
     
     dtype = getattr(torch, args.precision)
     

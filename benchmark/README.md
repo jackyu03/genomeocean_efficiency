@@ -63,8 +63,15 @@ python benchmark/run_full_benchmark.py \
     --device cuda \
     --quant-modes standard 8bit 4bit_nf4 \
     --batch-size 8 \
-    --umap-dim 10
+    --umap-dim 10 \
+    --n-genomes 50
 ```
+
+**Input CSV Format:**
+The dataset must contain the following columns:
+-   `genome_id`: The label/species ID (e.g., `GCA_0000123.1`). Used as ground truth.
+-   `fragment_id`: Unique identifier for the sequence fragment (e.g., `GCA_0000123.1_0`).
+-   `seq`: The DNA sequence string.
 
 ### 3. HPC Submission
 Use the provided SLURM script:
