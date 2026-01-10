@@ -63,7 +63,7 @@ def batch_process_and_measure(model, tokenizer, sequences, device, max_len, batc
             for batch in batches:
                 # Tokenize
                 inputs = tokenizer(batch, padding=True, truncation=True, max_length=max_len, return_tensors="pt")
-                inputs = {k: v.to(device) for k, v in inputs.items()}
+                inputs = {k: v.to(device) for k, v in inputs.items() if k != "token_type_ids"}
                 
                 # Count tokens
                 n_toks = inputs["input_ids"].numel()
