@@ -358,7 +358,7 @@ def evaluate_quantization_quality(model_loader_func,
     import os
     os.environ['QUANT_MODE'] = 'standard'
     
-    from model_to_benchmark import load_model
+    from core.model_loader import load_model
     std_model, std_tokenizer, _ = load_model(model_name, device, dtype)
     
     print("Extracting standard model outputs...")

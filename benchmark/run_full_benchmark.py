@@ -26,8 +26,8 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from quantization_benchmark.quality_eval import evaluate_quantization_quality, extract_layer_outputs, compare_quantization_outputs, save_quality_results
 from binning_benchmark.eval import run_binning_eval
-from model_to_benchmark import load_model, get_max_length
-from common.metrics import EnergyMeter
+from core.model_loader import load_model, get_max_length
+from core.metrics import EnergyMeter
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 log = logging.getLogger("go_full_bench")
