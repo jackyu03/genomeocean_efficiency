@@ -1,85 +1,49 @@
-# Quantization Benchmark
+# GenomeOcean Efficiency Benchmark
 
-Comprehensive benchmarking and quality evaluation for quantized genomic models.
+A comprehensive benchmarking suite for genomic language models, evaluating both **Quantization Quality** (distributional preservation) and **Downstream Utility** (Metagenomics Binning).
 
-## Quick Start
+## Overview
 
-### Run Complete Benchmark
+This benchmark evaluates how different quantization methods (8-bit, 4-bit NF4/FP4) affect model performance on biological tasks.
+
+It consists of two phases:
+1.  **Quality Evaluation**: Measures KL divergence, Cosine Similarity, and Perplexity of quantized vs. standard embeddings.
+2.  **Binning Evaluation**: Clusters sequence embeddings using DBSCAN to verify if species-specific signal is preserved.
+
+## Usage
+
+### 1. Install Dependencies
+```bash
+pip install -r requirements.txt
+# Requires: torch, transformers, bitsandbytes, scikit-learn, pandas
+```
+
+### 2. Run Benchmark
+Use the unified runner script:
 
 ```bash
-sbatch run_quantization_benchmark.sh
+python benchmark/run_full_benchmark.py \
+    --csv path/to/dataset.csv \
+    --model DOEJGI/GenomeOcean-4B \
+    --device cuda
 ```
 
-This will:
-- Test all quantization modes (standard, 8bit, 4bit variants)
-- Measure performance (throughput, memory, latency, energy)
-- Evaluate quality (KL divergence, cosine similarity)
-- Create visualizations
-- Save results to `./results/analysis/`
+### Arguments
 
-### View Results
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--csv` | **Required** | Input CSV file containing `genome_id` and `seq` columns. |
+| `--model` | **Required** | HuggingFace model ID or path. |
+| `--quant-modes` | `standard 8bit 4bit_nf4` | List of quantization modes to evaluate. |
+| `--max-len` | `5000` | Maximum sequence length (bp) to process. |
+| `--n-binning-species` | `50` | Number of species to sample for the binning task. |
+| `--outdir` | `./results_full` | Base directory for results (timestamped subfolders created automatically). |
 
-```bash
-# Main performance metrics
-cat ./results/analysis/quant_summary.csv
+## Output Structure
 
-# Quality metrics
-cat ./results/analysis/quality_metrics.csv
+Results are saved to `results_full/run_YYYYMMDD_HHMMSS/`:
 
-# Visualizations
-ls ./results/analysis/*.png
-```
-
-### Run Analysis Only (If You Have Results)
-
-```bash
-python scripts/run_complete_analysis.py \
-    --results-dir ./results \
-    --output-dir ./results/analysis \
-    --skip-quality
-```
-
-## Output Files
-
-All saved to `./results/analysis/`:
-
-**Performance Analysis:**
-- `quant_summary.csv` - Main performance metrics by quantization mode
-- `memory_analysis.csv` - Memory usage statistics
-- `throughput_comparison.csv` - Throughput comparison
-- `best_performers.csv` - Best configurations
-
-**Quality Evaluation:**
-- `quality_metrics.csv` - KL divergence, cosine similarity, SNR
-- `distribution_statistics.csv` - Distribution stats per layer
-
-**Visualizations:**
-- `throughput_comparison.png`
-- `memory_comparison.png`
-- `performance_memory_tradeoff.png`
-- `divergence_comparison.png`
-- `cosine_similarity.png`
-- And more...
-
-## Quantization Modes
-
-- `standard` - No quantization (baseline)
-- `8bit` - 8-bit quantization
-- `4bit_nf4` - 4-bit NF4 quantization
-- `4bit_fp4` - 4-bit FP4 quantization
-- `4bit_nf4_double` - 4-bit NF4 with double quantization
-
-## Structure
-
-```
-benchmark/
-├── quantization_benchmark/     # Core library
-│   ├── analysis.py            # Performance analysis
-│   ├── quality_eval.py        # Quality evaluation
-│   └── visualization.py       # Plotting functions
-├── scripts/
-│   └── run_complete_analysis.py
-├── run_quantization_benchmark.sh
-├── model_to_benchmark.py
-└── go_benchmark.py
-```
+- **`binning_metrics.csv`**: Contains ARI (Adjusted Rand Index), Purity, and fraction of recovered genomes for each quantization mode.
+- **`quality/`**: Directory containing:
+    - `quality_metrics.csv`: KL Divergence, Cosine Similarity, SNR.
+    - `distribution_statistics.csv`: Detailed embedding stats.
