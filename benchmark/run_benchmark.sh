@@ -19,6 +19,12 @@ DATASET_FILE="dataset/arc53_2000_seq_50k.csv"
 OUTPUT_DIR="./results_hpc"
 QUANT_MODES="standard 8bit 4bit_nf4"
 
+# Parameters
+UMAP_DIM=10
+DBSCAN_EPS=0.5
+DBSCAN_MIN_SAMPLES=5
+MAX_LEN=5000
+
 cd /global/scratch/users/mutianyu2026/genomeocean_efficiency/benchmark/ || exit
 
 # Activate environment
@@ -33,8 +39,11 @@ python run_full_benchmark.py \
     --model "$MODEL_NAME" \
     --outdir "$OUTPUT_DIR" \
     --quant-modes $QUANT_MODES \
-    --n-binning-species 50 \
-    --max-len 5000 \
+    --max-len $MAX_LEN \
+    --umap-dim $UMAP_DIM \
+    --dbscan-eps $DBSCAN_EPS \
+    --dbscan-min-samples $DBSCAN_MIN_SAMPLES \
+    --batch-size 8 \
     --device cuda
 
 echo "Benchmark finished at $(date)"
