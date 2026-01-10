@@ -23,8 +23,10 @@ QUANT_MODES="standard 8bit 4bit_nf4"
 UMAP_DIM=10
 DBSCAN_EPS=0.5
 DBSCAN_MIN_SAMPLES=5
-MAX_LEN=5000
-N_GENOMES=50
+MAX_TOKENS=1024
+N_GENOMES=20
+N_FRAGMENTS=50
+SEED=42
 
 cd /global/scratch/users/mutianyu2026/genomeocean_efficiency/benchmark/ || exit
 
@@ -40,12 +42,14 @@ python run_full_benchmark.py \
     --model "$MODEL_NAME" \
     --outdir "$OUTPUT_DIR" \
     --quant-modes $QUANT_MODES \
-    --max-len $MAX_LEN \
+    --max-tokens $MAX_TOKENS \
     --umap-dim $UMAP_DIM \
     --dbscan-eps $DBSCAN_EPS \
     --dbscan-min-samples $DBSCAN_MIN_SAMPLES \
     --batch-size 8 \
     --n-genomes $N_GENOMES \
+    --n-fragments $N_FRAGMENTS \
+    --seed $SEED \
     --device cuda
 
 echo "Benchmark finished at $(date)"

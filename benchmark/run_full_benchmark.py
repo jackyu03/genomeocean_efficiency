@@ -132,9 +132,11 @@ def main():
     parser.add_argument("--precision", type=str, default="float16", help="Precision")
     parser.add_argument("--quant-modes", type=str, nargs="+", default=["standard", "8bit", "4bit_nf4"], help="Modes")
     parser.add_argument("--outdir", type=str, default="./results_full", help="Base output dir")
-    parser.add_argument("--max-len", type=int, default=5000, help="Max seq length")
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size for inference")
-    parser.add_argument("--n-genomes", type=int, default=None, help="Number of genomes to use (top N from CSV)")
+    parser.add_argument("--max-tokens", type=int, default=5000, help="Max length in TOKENS (not base pairs)")
+    parser.add_argument("--n-genomes", type=int, default=None, help="Number of genomes to use (randomly sampled)")
+    parser.add_argument("--n-fragments", type=int, default=None, help="Number of fragments per genome (randomly sampled)")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for sampling")
     
     # Binning Params
     parser.add_argument("--umap-dim", type=int, default=10)
@@ -142,6 +144,9 @@ def main():
     parser.add_argument("--dbscan-min-samples", type=int, default=5)
     
     args = parser.parse_args()
+    
+    # Set seed for reproducibility
+    np.random.seed(args.seed)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     outdir = Path(args.outdir) / f"run_{timestamp}"
@@ -160,14 +165,28 @@ def main():
     if args.n_genomes is not None:
         unique_genomes = df["genome_id"].unique()
         if len(unique_genomes) > args.n_genomes:
-            selected_genomes = unique_genomes[:args.n_genomes]
+            # Randomly sample genomes using the seeded generator
+            selected_genomes = np.random.choice(unique_genomes, size=args.n_genomes, replace=False)
             df = df[df["genome_id"].isin(selected_genomes)]
-            log.info(f"Filtered dataset to top {args.n_genomes} genomes. Total sequences: {len(df)}")
+            log.info(f"Randomly subsampled to {args.n_genomes} genomes (Seed={args.seed}).")
         else:
-            log.info(f"Requested {args.n_genomes} genomes but found only {len(unique_genomes)}. Using all.")
+            log.info(f"Requested {args.n_genomes} genomes but found {len(unique_genomes)}. Using all.")
+
+    # Filter by number of fragments per genome if requested
+    if args.n_fragments is not None:
+        # Group by genome_id and sample n_fragments
+        log.info(f"Subsampling to {args.n_fragments} fragments per genome...")
+        
+        def sample_fragments(group):
+            if len(group) > args.n_fragments:
+                return group.sample(n=args.n_fragments, random_state=args.seed)
+            return group
+
+        df = df.groupby("genome_id", group_keys=False).apply(sample_fragments)
+        log.info(f"Total sequences after fragment subsampling: {len(df)}")
 
     sequences = df["seq"].tolist()
-    genome_ids = df["genome_id"].tolist() # This is now the clean ground truth (e.g. GCA_123.1)
+    genome_ids = df["genome_id"].tolist()
     
     dtype = getattr(torch, args.precision)
     
@@ -197,7 +216,7 @@ def main():
             # B. Run Inference (Perf + Embeddings)
             log.info(f"Running Inference & Performance Measurement (BS={args.batch_size})...")
             embeddings, perf = batch_process_and_measure(
-                model, tokenizer, sequences, args.device, args.max_len, args.batch_size
+                model, tokenizer, sequences, args.device, args.max_tokens, args.batch_size
             )
             
             # Save Perf

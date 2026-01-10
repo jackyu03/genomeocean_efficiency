@@ -1,6 +1,6 @@
 # GenomeOcean Efficiency Benchmark
 
-A comprehensive benchmarking suite for genomic language models, integrating **Performance** (Speed/Energy), **Quality** (Distributional), and **Downstream Utility** (Binning) into a single, unified pipeline.
+A comprehensive benchmarking suite for genomic language models, integrating **Performance** (Speed/Energy), **Quality** (Distributional), and **Downstream Utility** (Binning) into a single, Unified Pipeline.
 
 ## 📂 Project Structure
 
@@ -19,32 +19,44 @@ benchmark/
 
 ## ⚙️ The Pipeline: How It Works
 
-When you run `run_full_benchmark.py`, the following process occurs for **each** quantization mode (e.g., `standard`, `8bit`, `4bit_nf4`) specified:
+This benchmark runs a strictly controlled experiment to evaluate how model quantization affects genomic tasks. When you run `run_full_benchmark.py`, it executes the following steps:
 
-### 1. Model Loading
--   The script imports `load_model` from `core/model_loader.py`.
--   Depending on `os.environ["QUANT_MODE"]`, it loads the HF model with the correct quantization config (BitsAndBytes).
+### 1. Data Loading & Filtering
+The script enforces reproducibility by controlling exactly which data is seen by the model.
+-   **Input**: Loads the provided CSV dataset.
+-   **Genome Selection** (`--n-genomes`, `--seed`): Randomly selects $N$ unique species (e.g., 20) from the dataset using a fixed random seed.
+-   **Fragment Subsampling** (`--n-fragments`): For each selected species, it randomly selects $M$ non-overlapping fragments (e.g., 50).
+-   **Output**: A fixed subset of sequences (e.g., $20 \times 50 = 1000$ sequences) that will be used for all subsequent steps.
 
-### 2. Performance Benchmarking (Combined with Inference)
--   The model iterates through your dataset in batches.
--   **EnergyMeter** (`core/metrics.py`) runs in the background, logging GPU power usage via NVML.
--   **Speed**: We calculate `Sequences/sec` and `Tokens/sec`.
--   **Embeddings**: While measuring speed, we extract and mean-pool the last hidden states for use in steps 3 & 4.
--   **Result**: Saves `performance_metrics.csv` (Speed, Power, Tokens/Watt).
+### 2. Initialization
+-   It iterates through each requested **Quantization Mode** (e.g., `standard` (FP16), `8bit`, `4bit_nf4`).
+-   For each mode, it loads the GenomeOcean model using `BitsAndBytesConfig`.
 
-### 3. Quality Evaluation
--   The script compares the embeddings of the current quantized model against the `standard` (FP16/BF16) baseline.
--   **Metrics**: KL Divergence, Jensen-Shannon Divergence, Cosine Similarity, Signal-to-Noise Ratio (SNR).
--   **Result**: Saves `quality/quality_metrics.csv`.
+### 3. Performance Profiling
+-   **Inference**: The model processes the filtered dataset in batches.
+-   **Metrics**:
+    -   **Throughput**: Sequences/sec and Tokens/sec.
+    -   **Power**: Logs real-time GPU power usage (Watts) via NVML to calculate **Tokens/Watt**.
+    -   **VRAM**: Tracks peak GPU memory usage.
+-   **Embeddings**: Simultaneously extracts mean-pooled hidden states (embeddings) for downstream tasks.
 
-### 4. Downstream Binning Evaluation
--   Using the **same** embeddings extracted in Step 2:
-    1.  **Dimensionality Reduction**: UMAP reduces the high-dim embeddings (e.g., 3072d) to `10d` (for clustering) and `2d` (for visualization).
-    2.  **Clustering**: DBSCAN attempts to group sequences into "species bins" based on density.
-    3.  **Validation**: Clusters are compared to the ground truth `genome_id` labels.
--   **Result**:
-    -   `binning_metrics.csv`: ARI (Adjusted Rand Index), Purity, Silhouette Score.
-    -   `plots/{mode}/`: Visual 2D Scatterplots showing predicted vs actual clusters.
+### 4. Quality Evaluation
+-   **Comparison**: Compares the embeddings of the current quantized model against the `standard` (FP16) baseline.
+-   **Metrics**:
+    -   **KL Divergence / Jensen-Shannon**: Measures how much the output distribution shifts.
+    -   **Cosine Similarity**: Measures directional fidelity of the embeddings.
+    -   **Signal-to-Noise Ratio (SNR)**: Quantifies the "noise" introduced by quantization.
+
+### 5. Downstream Binning (Clustering)
+-   **Goal**: Can the quantized embeddings still distinguish between different species?
+-   **Dimensionality Reduction**: UMAP projects high-dimensional embeddings (e.g., 3072d) to:
+    -   **10d** for DBSCAN clustering.
+    -   **2d** for visualization.
+-   **Clustering**: DBSCAN clusters the sequences based on density.
+-   **Validation**:
+    -   **ARI (Adjusted Rand Index)**: 1.0 = Perfect match with Ground Truth `genome_id`.
+    -   **Purity**: How "pure" each cluster is (percentage of dominant species).
+-   **Visualization**: Generates side-by-side scatter plots (Predicted Clusters vs. True Species).
 
 ---
 
@@ -62,30 +74,38 @@ python benchmark/run_full_benchmark.py \
     --model DOEJGI/GenomeOcean-4B \
     --device cuda \
     --quant-modes standard 8bit 4bit_nf4 \
+    --max-tokens 5000 \
     --batch-size 8 \
     --umap-dim 10 \
-    --n-genomes 50
+    --n-genomes 50 \
+    --n-fragments 100 \
+    --seed 42
 ```
 
-**Input CSV Format:**
-The dataset must contain the following columns:
--   `genome_id`: The label/species ID (e.g., `GCA_0000123.1`). Used as ground truth.
--   `fragment_id`: Unique identifier for the sequence fragment (e.g., `GCA_0000123.1_0`).
--   `seq`: The DNA sequence string.
+**Input CSV Requirements:**
+The dataset **must** contain the following headers:
+-   `genome_id`: The ground truth label (e.g., `GCA_0000123.1`). Used for calculating ARI/Purity.
+-   `fragment_id`: Unique identifier for each sequence (e.g., `GCA_0000123.1_0`).
+-   `seq`: The actual DNA sequence string.
 
 ### 3. HPC Submission
-Use the provided SLURM script:
+Adjust the variables in `benchmark/run_benchmark.sh` and submit:
 ```bash
+# Parameters in shell script:
+# N_GENOMES=20      <-- Number of species to sample
+# N_FRAGMENTS=50    <-- Fragments per species
+# SEED=42           <-- Random seed for reproducibility
+
 sbatch benchmark/run_benchmark.sh
 ```
 
-## 📊 Output
+## 📊 Output Structure
 
-All results are saved to `results_full/run_YYYYMMDD_HHMMSS/`:
+Results are saved to timestamped directories, e.g., `results_full/run_20240101_120000/`:
 
-| File | Description |
-|------|-------------|
-| `performance_metrics.csv` | Throughput (tok/s), Power (W), Efficiency (tok/W), VRAM Usage. |
-| `binning_metrics.csv` | Clustering accuracy (ARI), Purity, and Noise %. |
-| `quality/quality_metrics.csv` | Distributional fidelity vs Standard model. |
-| `plots/{mode}/*.png` | 2D UMAP visualizations of the binning space. |
+| File/Folder | Content |
+|-------------|---------|
+| `performance_metrics.csv` | **Speed & Power**: `tokens_per_s`, `avg_power_W`, `tokens_per_watt`, `peak_vram_GB`. |
+| `binning_metrics.csv` | **Downstream Task**: `ARI`, `completeness`, `silhouette_score`, `n_clusters`. |
+| `quality/` | **Fidelity**: `quality_metrics.csv` (KL, Cosine vs Standard). |
+| `plots/{mode}/` | **Visuals**: `cluster_viz_predicted.png` (DBSCAN results) vs `cluster_viz_truth.png` (Species labels). |
