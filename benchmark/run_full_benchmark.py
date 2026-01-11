@@ -36,7 +36,7 @@ def batch_process_and_measure(model, tokenizer, sequences, device, max_len, batc
     """
     Runs inference to extract embeddings while measuring performance (Speed + Energy).
     Returns:
-        embeddings: np.ndarray (N, hidden_dim)
+        embeddings_dict: dict of np.ndarray {'last': (N, D), 'second_last': (N, D)}
         perf_metrics: dict (tokens/s, avg_power, etc.)
     """
     model.eval()
@@ -47,7 +47,7 @@ def batch_process_and_measure(model, tokenizer, sequences, device, max_len, batc
     # 2. Setup Metrics
     total_tokens = 0
     total_seqs = 0
-    all_embeddings = []
+    all_embeddings = {'last': [], 'second_last': []}
     
     # Energy Meter
     gpu_index = 0
@@ -76,14 +76,15 @@ def batch_process_and_measure(model, tokenizer, sequences, device, max_len, batc
                 # Forward Pass
                 outputs = model(**inputs, output_hidden_states=True)
                 
-                # Mean Pool Last Hidden State
-                hs = outputs.hidden_states[-1] # (B, L, D)
+                # Mean Pool Hidden States
                 mask = inputs["attention_mask"].unsqueeze(-1) # (B, L, 1)
-                sum_hs = torch.sum(hs * mask, dim=1)
                 sum_mask = torch.clamp(mask.sum(dim=1), min=1e-9)
-                pooled = sum_hs / sum_mask # (B, D)
-                
-                all_embeddings.append(pooled.cpu().numpy())
+
+                for layer_idx, layer_name in [(-1, 'last'), (-2, 'second_last')]:
+                    hs = outputs.hidden_states[layer_idx] # (B, L, D)
+                    sum_hs = torch.sum(hs * mask, dim=1)
+                    pooled = sum_hs / sum_mask # (B, D)
+                    all_embeddings[layer_name].append(pooled.cpu().numpy())
                 
                 del inputs, outputs, hs, pooled
                 
@@ -94,7 +95,9 @@ def batch_process_and_measure(model, tokenizer, sequences, device, max_len, batc
     duration = end_time - start_time
     
     # 3. Calculate Metrics
-    embeddings = np.concatenate(all_embeddings, axis=0) # (N, D)
+    embeddings = {
+        k: np.concatenate(v, axis=0) for k, v in all_embeddings.items()
+    }
     
     seqs_per_s = total_seqs / duration
     tokens_per_s = total_tokens / duration
@@ -201,7 +204,7 @@ def main():
     binning_results = []
     
     # Need to store STANDARD embeddings for quality comparison
-    standard_embeddings = None
+    standard_embeddings = {}
     quality_comparisons = []
     
     # Ensure 'standard' runs first if present so we have baseline
@@ -241,13 +244,13 @@ def main():
             if mode == "standard":
                 standard_embeddings = embeddings
                 log.info("Stored standard embeddings for reference.")
-            elif standard_embeddings is not None:
+            elif standard_embeddings:
                 log.info("Computing Quality Metrics vs Standard...")
                 # We reuse the logic from quality_eval but adapted for raw numpy arrays
                 
                 # Wrap in dict format expected by helper
-                std_dict = {'last': torch.tensor(standard_embeddings)}
-                quant_dict = {'last': torch.tensor(embeddings)}
+                std_dict = {k: torch.tensor(v) for k, v in standard_embeddings.items()}
+                quant_dict = {k: torch.tensor(v) for k, v in embeddings.items()}
                 
                 comp = compare_quantization_outputs(std_dict, quant_dict, mode)
                 quality_comparisons.append(comp)
@@ -260,7 +263,7 @@ def main():
             mode_plot_dir.mkdir(parents=True, exist_ok=True)
             
             bin_metrics = run_binning_eval(
-                embeddings, 
+                embeddings['last'], 
                 genome_ids,
                 method="dbscan",
                 output_dir=str(mode_plot_dir),
