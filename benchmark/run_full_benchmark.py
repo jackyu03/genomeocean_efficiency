@@ -277,7 +277,9 @@ def main():
     pd.DataFrame(binning_results).to_csv(outdir / "binning_metrics.csv", index=False)
     # Quality
     if quality_comparisons:
-        save_quality_results(quality_comparisons, outdir / "quality")
+        quality_dir = outdir / "quality"
+        quality_dir.mkdir(parents=True, exist_ok=True)
+        save_quality_results(quality_comparisons, quality_dir)
         
     log.info(f"\nAll Done! Results saved to {outdir}")
 
