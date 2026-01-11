@@ -49,6 +49,10 @@ def plot_clusters(embeddings_2d: np.ndarray,
         legend="full" if n_unique < 30 else False # Hide legend if too many classes
     )
     
+    # Move legend outside of plot
+    if n_unique < 30:
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
+    
     plt.title(title)
     plt.tight_layout()
     plt.savefig(output_path, dpi=300)

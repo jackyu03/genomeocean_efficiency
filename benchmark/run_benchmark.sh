@@ -7,8 +7,8 @@
 #SBATCH -q es_normal
 #SBATCH --gres=gpu:A40:1
 #SBATCH --job-name=go_bench
-#SBATCH --output=/global/scratch/users/mutianyu2026/genomeocean_efficiency/benchmark/results/logs/benchmark_%j.log
-#SBATCH --error=/global/scratch/users/mutianyu2026/genomeocean_efficiency/benchmark/results/logs/benchmark_%j.log
+#SBATCH --output=/global/scratch/users/mutianyu2026/genomeocean_efficiency/benchmark/results_hpc/logs/benchmark_%j.log
+#SBATCH --error=/global/scratch/users/mutianyu2026/genomeocean_efficiency/benchmark/results_hpc/logs/benchmark_%j.log
 
 # ==============================================================================
 # GenomeOcean Unified Benchmark Runner (HPC)
@@ -17,7 +17,7 @@
 MODEL_NAME="DOEJGI/GenomeOcean-100M"
 DATASET_FILE="dataset/arc53_2000_seq_50k.csv"
 OUTPUT_DIR="./results_hpc"
-QUANT_MODES="standard 8bit 4bit_nf4"
+QUANT_MODES="standard 8bit 4bit_nf4 4bit_fp4 4bit_nf4_double"
 
 # Parameters
 UMAP_DIM=10
@@ -25,7 +25,7 @@ DBSCAN_EPS=0.5
 DBSCAN_MIN_SAMPLES=5
 MAX_TOKENS=1024
 N_GENOMES=20
-N_FRAGMENTS=50
+N_FRAGMENTS=100
 SEED=42
 
 cd /global/scratch/users/mutianyu2026/genomeocean_efficiency/benchmark/ || exit
