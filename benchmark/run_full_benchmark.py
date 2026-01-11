@@ -65,6 +65,9 @@ def batch_process_and_measure(model, tokenizer, sequences, device, max_len, batc
                 inputs = tokenizer(batch, padding=True, truncation=True, max_length=max_len, return_tensors="pt")
                 inputs = {k: v.to(device) for k, v in inputs.items() if k != "token_type_ids"}
                 
+                if total_seqs == 0: 
+                     log.info(f"Draft Input shape (Batch 0): {inputs['input_ids'].shape} (B, L)")
+                
                 # Count tokens
                 n_toks = inputs["input_ids"].numel()
                 total_tokens += n_toks
@@ -184,6 +187,9 @@ def main():
 
         df = df.groupby("genome_id", group_keys=False).apply(sample_fragments)
         log.info(f"Total sequences after fragment subsampling: {len(df)}")
+        log.info(f"Dataset shape: {df.shape}")
+        avg_len_chars = df["seq"].str.len().mean()
+        log.info(f"Average sequence length (bps): {avg_len_chars:.2f}")
 
     sequences = df["seq"].tolist()
     genome_ids = df["genome_id"].tolist()
