@@ -93,9 +93,13 @@ def batch_process_and_measure(model, input_ids_all, attention_mask_all, device, 
                 sum_mask = torch.clamp(mask.sum(dim=1), min=1e-9)
 
                 for layer_idx, layer_name in [(-1, 'last'), (-2, 'second_last')]:
-                    hs = outputs.hidden_states[layer_idx] # (B, L, D)
+                    hs = outputs.hidden_states[layer_idx].float() # Cast to float32 to prevent overflow
                     sum_hs = torch.sum(hs * mask, dim=1)
                     pooled = sum_hs / sum_mask # (B, D)
+                    
+                    # Sanitize to prevent Infinity/NaN propagation
+                    pooled = torch.nan_to_num(pooled, nan=0.0, posinf=0.0, neginf=0.0)
+                    
                     all_embeddings[layer_name].append(pooled.cpu().numpy())
                 
                 del inputs, outputs, hs, pooled
