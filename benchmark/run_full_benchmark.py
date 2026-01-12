@@ -29,6 +29,7 @@ from binning_benchmark.eval import run_binning_eval
 from core.model_loader import load_model, get_max_length
 from core.metrics import EnergyMeter
 from transformers import AutoTokenizer
+import seaborn as sns
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 log = logging.getLogger("go_full_bench")
@@ -208,6 +209,14 @@ def main():
     sequences = df["seq"].tolist()
     genome_ids = df["genome_id"].tolist()
     
+    # Generate Global Color Map for Consistent Plotting
+    unique_genomes_sorted = sorted(list(set(genome_ids)))
+    palette = sns.color_palette("husl", len(unique_genomes_sorted))
+    # Convert RGB tuples to hex strings for consistency if needed, or keep as tuples
+    # Matplotlib accepts tuples fine.
+    global_color_map = dict(zip(unique_genomes_sorted, palette))
+    log.info(f"Generated global color map for {len(unique_genomes_sorted)} genomes.")
+    
     dtype = getattr(torch, args.precision)
     
     # Storage for results
@@ -302,7 +311,10 @@ def main():
                 output_dir=str(mode_plot_dir),
                 umap_dim=args.umap_dim,
                 eps=args.dbscan_eps,
-                min_samples=args.dbscan_min_samples
+                min_samples=args.dbscan_min_samples,
+                model_name=args.model,
+                quant_mode=mode,
+                color_map=global_color_map
             )
             bin_metrics["quantization"] = mode
             binning_results.append(bin_metrics)
