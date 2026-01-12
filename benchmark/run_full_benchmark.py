@@ -28,23 +28,29 @@ from quantization_benchmark.quality_eval import evaluate_quantization_quality, e
 from binning_benchmark.eval import run_binning_eval
 from core.model_loader import load_model, get_max_length
 from core.metrics import EnergyMeter
+from transformers import AutoTokenizer
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 log = logging.getLogger("go_full_bench")
 
-def batch_process_and_measure(model, tokenizer, sequences, device, max_len, batch_size=8):
+def batch_process_and_measure(model, input_ids_all, attention_mask_all, device, batch_size=8):
     """
     Runs inference to extract embeddings while measuring performance (Speed + Energy).
+    Args:
+        model: Loaded model
+        input_ids_all: Tensor (N, L)
+        attention_mask_all: Tensor (N, L)
+        device: "cuda" or "cpu"
+        batch_size: int
+        
     Returns:
         embeddings_dict: dict of np.ndarray {'last': (N, D), 'second_last': (N, D)}
         perf_metrics: dict (tokens/s, avg_power, etc.)
     """
     model.eval()
     
-    # 1. Prepare Batches
-    batches = [sequences[i:i + batch_size] for i in range(0, len(sequences), batch_size)]
-    
     # 2. Setup Metrics
+    total_samples = input_ids_all.size(0)
     total_tokens = 0
     total_seqs = 0
     all_embeddings = {'last': [], 'second_last': []}
@@ -60,24 +66,29 @@ def batch_process_and_measure(model, tokenizer, sequences, device, max_len, batc
     
     with EnergyMeter(gpu_index=gpu_index) as em:
         with torch.no_grad():
-            for batch in batches:
-                # Tokenize
-                inputs = tokenizer(batch, padding=True, truncation=True, max_length=max_len, return_tensors="pt")
-                inputs = {k: v.to(device) for k, v in inputs.items() if k != "token_type_ids"}
+            for i in range(0, total_samples, batch_size):
+                # Slice batch
+                batch_input_ids = input_ids_all[i : i + batch_size].to(device)
+                batch_attention_mask = attention_mask_all[i : i + batch_size].to(device)
+                
+                inputs = {
+                    "input_ids": batch_input_ids,
+                    "attention_mask": batch_attention_mask
+                }
                 
                 if total_seqs == 0: 
                      log.info(f"Draft Input shape (Batch 0): {inputs['input_ids'].shape} (B, L)")
                 
-                # Count tokens
-                n_toks = inputs["input_ids"].numel()
+                # Count tokens (non-padded entities)
+                n_toks = batch_attention_mask.sum().item()
                 total_tokens += n_toks
-                total_seqs += len(batch)
+                total_seqs += batch_input_ids.size(0)
                 
                 # Forward Pass
                 outputs = model(**inputs, output_hidden_states=True)
                 
                 # Mean Pool Hidden States
-                mask = inputs["attention_mask"].unsqueeze(-1) # (B, L, 1)
+                mask = batch_attention_mask.unsqueeze(-1) # (B, L, 1)
                 sum_mask = torch.clamp(mask.sum(dim=1), min=1e-9)
 
                 for layer_idx, layer_name in [(-1, 'last'), (-2, 'second_last')]:
@@ -213,6 +224,28 @@ def main():
         modes.remove("standard")
         modes.insert(0, "standard")
         
+    # 1.5 Pre-tokenize Data
+    log.info("Pre-tokenizing entire dataset to eliminate CPU bottlenecks...")
+    pre_tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+    if pre_tokenizer.pad_token is None:
+        if pre_tokenizer.eos_token is not None:
+            pre_tokenizer.pad_token = pre_tokenizer.eos_token
+        else:
+            pre_tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+            
+    # Tokenize all sequences at once (or could do in large chunks if needed)
+    all_inputs = pre_tokenizer(
+        sequences, 
+        padding=True, 
+        truncation=True, 
+        max_length=args.max_tokens, 
+        return_tensors="pt"
+    )
+    
+    input_ids_all = all_inputs["input_ids"]
+    attention_mask_all = all_inputs["attention_mask"]
+    log.info(f"Dataset Tokenized. Shape: {input_ids_all.shape}")
+        
     # 2. Main Loop Over Modes
     for mode in modes:
         log.info(f"\n=== Processing Mode: {mode} ===")
@@ -225,7 +258,7 @@ def main():
             # B. Run Inference (Perf + Embeddings)
             log.info(f"Running Inference & Performance Measurement (BS={args.batch_size})...")
             embeddings, perf = batch_process_and_measure(
-                model, tokenizer, sequences, args.device, args.max_tokens, args.batch_size
+                model, input_ids_all, attention_mask_all, args.device, args.batch_size
             )
             
             # Save Perf
