@@ -17,7 +17,7 @@ except Exception:
 log = logging.getLogger("metrics")
 
 class EnergyMeter:
-    def __init__(self, gpu_index: int = 0, interval_s: float = 0.05):
+    def __init__(self, gpu_index: int = 0, interval_s: float = 0.1):
         self.gpu_index = gpu_index
         self.interval = interval_s
         self.samples = []
@@ -32,9 +32,12 @@ class EnergyMeter:
             try:
                 p_mw = pynvml.nvmlDeviceGetPowerUsage(handle)
             except Exception:
-                p_mw = 0
+                p_mw = None
+            
             ts = time.perf_counter()
-            self.samples.append((ts, p_mw))
+            # Only append valid non-zero readings
+            if p_mw is not None and p_mw > 0:
+                self.samples.append((ts, p_mw))
             time.sleep(self.interval)
 
     def __enter__(self):
