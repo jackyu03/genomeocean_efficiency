@@ -12,13 +12,33 @@ try:
     import pynvml
     NVML_AVAILABLE = True
 except Exception:
+except Exception:
     NVML_AVAILABLE = False
+
+import os # Need os for env vars
 
 log = logging.getLogger("metrics")
 
 class EnergyMeter:
     def __init__(self, gpu_index: int = 0, interval_s: float = 0.1):
-        self.gpu_index = gpu_index
+        # Resolve physical GPU index if CUDA_VISIBLE_DEVICES is set
+        cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if cvd:
+            try:
+                # Map logical gpu_index (e.g. 0) to physical index from the list
+                # e.g. CVD="2,3", gpu_index=0 -> physical=2
+                # e.g. CVD="2,3", gpu_index=1 -> physical=3
+                visible_devices = [int(x.strip()) for x in cvd.split(",")]
+                if gpu_index < len(visible_devices):
+                    self.gpu_index = visible_devices[gpu_index]
+                    log.info(f"EnergyMeter: Mapped logical GPU {gpu_index} to physical GPU {self.gpu_index} via CUDA_VISIBLE_DEVICES")
+                else:
+                    self.gpu_index = gpu_index # Fallback
+            except ValueError:
+                 self.gpu_index = gpu_index
+        else:
+            self.gpu_index = gpu_index
+            
         self.interval = interval_s
         self.samples = []
         self._stop = threading.Event()
