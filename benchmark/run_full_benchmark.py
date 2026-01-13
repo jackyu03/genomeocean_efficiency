@@ -20,6 +20,7 @@ import numpy as np
 import threading
 from pathlib import Path
 from datetime import datetime
+from tqdm import tqdm
 
 # Ensure we can import modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -67,7 +68,7 @@ def batch_process_and_measure(model, input_ids_all, attention_mask_all, device, 
     
     with EnergyMeter(gpu_index=gpu_index) as em:
         with torch.no_grad():
-            for i in range(0, total_samples, batch_size):
+            for i in tqdm(range(0, total_samples, batch_size), desc="Inference", unit="batch"):
                 # Slice batch
                 batch_input_ids = input_ids_all[i : i + batch_size].to(device)
                 batch_attention_mask = attention_mask_all[i : i + batch_size].to(device)
