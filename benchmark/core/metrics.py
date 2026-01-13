@@ -12,7 +12,6 @@ try:
     import pynvml
     NVML_AVAILABLE = True
 except Exception:
-except Exception:
     NVML_AVAILABLE = False
 
 import os # Need os for env vars
