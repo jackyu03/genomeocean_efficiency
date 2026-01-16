@@ -59,10 +59,16 @@ def batch_process_and_measure(model, input_ids_all, attention_mask_all, device, 
     
     # Energy Meter
     gpu_index = 0
-    
+    base_vram = 0.0
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
         torch.cuda.synchronize()
+        base_vram = torch.cuda.memory_allocated() / 1e9
+
+    with torch.no_grad():
+        dummy_ids = input_ids_all[:1].to(device)
+        _ = model(dummy_ids)
+        del dummy_ids
 
     start_time = time.perf_counter()
     
@@ -104,9 +110,11 @@ def batch_process_and_measure(model, input_ids_all, attention_mask_all, device, 
                     all_embeddings[layer_name].append(pooled.cpu().numpy())
                 
                 del inputs, outputs, hs, pooled
-                
+    
+    peak_vram = 0.0
     if device == "cuda":
         torch.cuda.synchronize()
+        peak_vram = torch.cuda.max_memory_allocated() / 1e9
         
     end_time = time.perf_counter()
     duration = end_time - start_time
@@ -129,9 +137,9 @@ def batch_process_and_measure(model, input_ids_all, attention_mask_all, device, 
         if avg_power > 0:
             tokens_per_watt = tokens_per_s / avg_power
             
-    vram_gb = 0.0
-    if device == "cuda":
-        vram_gb = torch.cuda.max_memory_reserved() / 1e9
+    # vram_gb = 0.0
+    # if device == "cuda":
+    #     vram_gb = torch.cuda.max_memory_reserved() / 1e9
         
     perf_metrics = {
         "duration_s": round(duration, 2),
@@ -142,7 +150,8 @@ def batch_process_and_measure(model, input_ids_all, attention_mask_all, device, 
         "avg_power_W": round(avg_power, 2),
         "energy_kWh": round(energy_kwh, 6),
         "tokens_per_watt": round(tokens_per_watt, 2),
-        "peak_vram_GB": round(vram_gb, 2)
+        "static_vram_GB": round(base_vram, 2),
+        "peak_vram_GB": round(peak_vram, 2)
     }
     
     return embeddings, perf_metrics
@@ -181,8 +190,8 @@ def main():
     
     # Validate columns
     required_cols = {"genome_id", "fragment_id", "seq"}
-    if not required_cols.issubset(df.columns):
-        raise ValueError(f"CSV must contain columns: {required_cols}. Found: {df.columns.tolist()}")
+    # if not required_cols.issubset(df.columns):
+    #     raise ValueError(f"CSV must contain columns: {required_cols}. Found: {df.columns.tolist()}")
 
     # Filter by number of genomes if requested
     if args.n_genomes is not None:
@@ -283,6 +292,7 @@ def main():
             
             # Log Perf
             log.info(f"Speed: {perf['tokens_per_s']} tok/s | Power: {perf['avg_power_W']} W | Eff: {perf['tokens_per_watt']} tok/W")
+            log.info(f"Static vram: {perf['static_vram_GB']} GB | Peak vram: {perf['peak_vram_GB']} GB")
 
             del model
             torch.cuda.empty_cache()

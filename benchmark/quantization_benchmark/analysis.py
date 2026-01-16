@@ -14,7 +14,7 @@ from typing import Dict, Tuple
 def load_benchmark_results(results_dir: str) -> pd.DataFrame:
     """Load all benchmark CSV files from results directory."""
     results_dir = Path(results_dir)
-    csv_files = list(results_dir.glob("benchmark_*.csv"))
+    csv_files = list(results_dir.glob("performance_*.csv"))
     
     if not csv_files:
         raise ValueError(f"No benchmark CSV files found in {results_dir}")
@@ -42,16 +42,19 @@ def compute_performance_summary(df: pd.DataFrame) -> pd.DataFrame:
         metrics = {
             'seqs_per_s': ['mean', 'std', 'min', 'max'],
             'tokens_per_s': ['mean', 'std', 'min', 'max'],
-            'peak_vram_GB': ['mean', 'std', 'min', 'max'],
+            "static_vram_GB": ['mean', 'std', 'min', 'max'],
+            "peak_vram_GB": ['mean', 'std', 'min', 'max'],
             'E2EL_ms': ['mean', 'std', 'min', 'max'],
             'avg_power_W': ['mean', 'std', 'min', 'max'],
             'tokens_per_watt': ['mean', 'std', 'min', 'max']
+
         }
     else:
         # Skip std when we only have 1 sample per mode
         metrics = {
             'seqs_per_s': ['mean'],
             'tokens_per_s': ['mean'],
+            "static_vram_GB": ['mean'],
             'peak_vram_GB': ['mean'],
             'E2EL_ms': ['mean'],
             'avg_power_W': ['mean'],
@@ -66,27 +69,70 @@ def compute_performance_summary(df: pd.DataFrame) -> pd.DataFrame:
     return summary
 
 
+# def compute_memory_efficiency(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict]:
+#     """Analyze memory efficiency across quantization modes."""
+    
+#     memory_stats = df.groupby('quantization')['peak_vram_GB'].agg(
+#         ['mean', 'std', 'min', 'max']
+#     ).round(3)
+    
+#     # Calculate memory reduction vs standard
+#     memory_reduction = {}
+#     if 'standard' in df['quantization'].values:
+#         standard_memory = df[df['quantization'] == 'standard']['peak_vram_GB'].mean()
+        
+#         for quant_mode in df['quantization'].unique():
+#             if quant_mode != 'standard':
+#                 mode_memory = df[df['quantization'] == quant_mode]['peak_vram_GB'].mean()
+#                 # Negative means reduction, positive means increase
+#                 reduction_pct = -((mode_memory - standard_memory) / standard_memory * 100)
+#                 memory_reduction[quant_mode] = {
+#                     'memory_gb': mode_memory,
+#                     'reduction_pct': reduction_pct
+#                 }
+    
+#     return memory_stats, memory_reduction
+
 def compute_memory_efficiency(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict]:
-    """Analyze memory efficiency across quantization modes."""
+    """Analyze both static and peak memory efficiency across quantization modes."""
     
-    memory_stats = df.groupby('quantization')['peak_vram_GB'].agg(
-        ['mean', 'std', 'min', 'max']
-    ).round(3)
+    metrics_to_agg = {
+        'static_vram_GB': ['mean', 'std', 'min', 'max'],
+        'peak_vram_GB': ['mean', 'std', 'min', 'max']
+    }
     
-    # Calculate memory reduction vs standard
+    available_metrics = {k: v for k, v in metrics_to_agg.items() if k in df.columns}
+    
+    memory_stats = df.groupby('quantization').agg(available_metrics).round(3)
+    
     memory_reduction = {}
     if 'standard' in df['quantization'].values:
-        standard_memory = df[df['quantization'] == 'standard']['peak_vram_GB'].mean()
+    
+        std_df = df[df['quantization'] == 'standard']
+        std_static = std_df['static_vram_GB'].mean() if 'static_vram_GB' in df.columns else None
+        std_peak = std_df['peak_vram_GB'].mean()
         
         for quant_mode in df['quantization'].unique():
-            if quant_mode != 'standard':
-                mode_memory = df[df['quantization'] == quant_mode]['peak_vram_GB'].mean()
-                # Negative means reduction, positive means increase
-                reduction_pct = -((mode_memory - standard_memory) / standard_memory * 100)
-                memory_reduction[quant_mode] = {
-                    'memory_gb': mode_memory,
-                    'reduction_pct': reduction_pct
-                }
+            if quant_mode == 'standard':
+                continue
+                
+            mode_df = df[df['quantization'] == quant_mode]
+            
+            mode_peak = mode_df['peak_vram_GB'].mean()
+            peak_reduction_pct = -((mode_peak - std_peak) / std_peak * 100)
+            
+            static_reduction_pct = None
+            mode_static = None
+            if std_static and 'static_vram_GB' in mode_df.columns:
+                mode_static = mode_df['static_vram_GB'].mean()
+                static_reduction_pct = -((mode_static - std_static) / std_static * 100)
+            
+            memory_reduction[quant_mode] = {
+                'peak_memory_gb': round(mode_peak, 3),
+                'peak_reduction_pct': round(peak_reduction_pct, 2),
+                'static_memory_gb': round(mode_static, 3) if mode_static else None,
+                'static_reduction_pct': round(static_reduction_pct, 2) if static_reduction_pct else None
+            }
     
     return memory_stats, memory_reduction
 
@@ -136,7 +182,8 @@ def identify_best_performers(df: pd.DataFrame) -> Dict:
     
     metrics = {
         'highest_throughput': ('tokens_per_s', 'max'),
-        'lowest_memory': ('peak_vram_GB', 'min'),
+        'lowest_peak_memory': ('peak_vram_GB', 'min'),
+        'lowest_static_memory': ('static_vram_GB', 'min'),
         'lowest_latency': ('E2EL_ms', 'min'),
         'most_energy_efficient': ('tokens_per_watt', 'max')
     }
