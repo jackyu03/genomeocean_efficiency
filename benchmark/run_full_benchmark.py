@@ -152,7 +152,7 @@ def main():
     parser.add_argument("--csv", type=str, required=True, help="Input CSV (genome_id, seq)")
     parser.add_argument("--model", type=str, required=True, help="HF Model ID")
     parser.add_argument("--device", type=str, default="cuda", help="Device")
-    parser.add_argument("--precision", type=str, default="float16", help="Precision")
+    parser.add_argument("--precision", type=str, default="bfloat16", help="Precision")
     parser.add_argument("--quant-modes", type=str, nargs="+", default=["standard", "8bit", "4bit_nf4"], help="Modes")
     parser.add_argument("--outdir", type=str, default="./results_full", help="Base output dir")
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size for inference")
