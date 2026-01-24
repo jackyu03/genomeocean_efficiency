@@ -81,9 +81,7 @@ def main():
     full_text = "".join(sequences)
     
     encodings = tokenizer(full_text, return_tensors="pt")
-    # For Accuracy, we might want the individual batches to handle padding properly?
-    # Or just use the same sliding window on the full stream for accuracy too.
-    # Let's reuse the encodings.
+    # We do NOT create encodings_list here anymore because we will chunk the stream later.
     
     input_ids_stream = encodings.input_ids
     log.info(f"Total Tokens in Stream: {input_ids_stream.numel()}")
@@ -108,17 +106,29 @@ def main():
             ppl, nll = compute_perplexity(model, input_ids_stream, stride=args.stride, device=args.device)
             log.info(f"Perplexity: {ppl:.4f} | NLL: {nll:.4f}")
             
-            # B. Accuracy
-            # For Accuracy, calculating on the WHOLE stream using the same sliding window logic inside metric would be best,
-            # or we can just chop it up. PPL function does sliding window.
-            # Let's extract accuracy validation.
-            # Since `compute_accuracy` takes a list of tensors (sequences), let's reshape our stream or use individual sequences.
+            # B. Accuracy (Evaluated on CHUNKED fragments to handle 50k bp length)
+            # Since sequences are long (50k bp) and model context is small (e.g. 2k), we MUST chunk them.
+            # We reuse the logic: extract chunks from the full text stream or individual sequences.
+            # To match PPL's coverage, we can just use the PPL stride logic but compute accuracy on batches.
             
-            # Better: Evaluate accuracy on the original VALIDATION FRAGMENTS individually to avoid boundary issues.
-            # Re-tokenize as list
-            log.info("Calculating Next-Token Accuracy (on fragments)...")
-            encodings_list = tokenizer(sequences, return_tensors="pt", padding=True, truncation=True, max_length=2048)
-            acc = compute_accuracy(model, encodings_list["input_ids"], device=args.device, batch_size=4)
+            log.info("Calculating Next-Token Accuracy (chunked)...")
+            
+            # Create chunks (stride=context_len to be efficient, or overlapping?)
+            # Standard eval often uses non-overlapping windows for speed, or sliding window for precision.
+            # Let's use 2048 non-overlapping for accuracy speed, or 2048 with stride 2048.
+            target_context = 2048 
+            
+            # We already have `input_ids_stream` which is the FULL concatenated text.
+            # Let's split it into chunks of 2048.
+            # (1, N) -> List of (1, 2048)
+            total_tokens = input_ids_stream.size(1)
+            chunks = []
+            for i in range(0, total_tokens, target_context):
+                chunk = input_ids_stream[:, i : min(i + target_context, total_tokens)]
+                if chunk.size(1) > 1: # Need at least 2 tokens to predict
+                    chunks.append(chunk)
+            
+            acc = compute_accuracy(model, chunks, device=args.device, batch_size=4)
             log.info(f"Accuracy: {acc:.4f}")
             
             results.append({
