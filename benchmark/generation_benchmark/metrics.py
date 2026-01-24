@@ -44,58 +44,14 @@ def compute_perplexity(model, input_ids, stride=512, context_len=None, device="c
     # trg_len = end_loc - prev_end_loc  (This is wrong in standard implementation, standard uses stride as target len usually)
     
     # Let's stick to the robust HF implementation pattern:
-    for begin_loc in tqdm(range(0, seq_len, stride), desc="Calculating Perplexity"):
+    # Sliding Window Loop
+    pbar = tqdm(range(0, seq_len, stride), desc="PPL")
+    for begin_loc in pbar:
         end_loc = min(begin_loc + context_len, seq_len)
-        trg_len = end_loc - prev_end_loc  # How many NEW tokens are we covering? 
+        trg_len = end_loc - prev_end_loc  
         
-        # When begin_loc=0, end_loc=2048, prev=0 -> trg=2048 (Predict all)
-        # When begin_loc=512, end_loc=2560 (if long enough), prev=2048 -> trg=512 (Predict last 512)
-        
-        # Actually, standard HF implementation logic:
-        # trg_len is usually `end_loc - begin_loc` if we are jumping by stride?
-        # NO. We want to evaluate the whole sequence exactly once.
-        # Ideally: 
-        # Window 1: [0...2048]. Targets: [0...2048].
-        # Window 2: [512...2560]. Targets: [2048...2560] ?? No, that leaves gaps if stride < context.
-        
-        # Correct Sliding Window Logic (PPL & Accuracy):
-        # We want to evaluate tokens [i ... i+stride].
-        # We provide context [i-context+stride ... i+stride].
-        
-        # HF Style:
-        # Input is `input_ids[:, begin_loc : end_loc]`
-        # Target is same.
-        # We set labels[:-trg_len] = -100 so we DONT calculate loss on context.
-        # Ideally, `trg_len` should start at `stride` except for the first window.
-        
-        # Let's simplify:
-        # If we use stride=stride, then for window starting at `begin_loc`, 
-        # we predict the last `stride` tokens (mostly).
-        
-        # Refined Logic:
-        # Window covers: [begin_loc : begin_loc + context_len]
-        # We want to predict: The tokens that were NOT covered by previous effective windows.
-        
-        # Actually, let's just use the stride logic directly:
-        # We evaluate the *last* `stride` tokens of the window, using the full window as context.
-        # For the very first window, we evaluate everything.
-        
-        # Input Chunk: [begin_loc : begin_loc + context_len]
-        # Target Len: 
-        #   If begin_loc == 0: target_len = context_len (or end_loc)
-        #   Else: target_len = stride (or whatever is left)
-        
-        # BUT `range(0, seq_len, stride)` steps by stride.
-        # So at step 0: we cover [0:stride] (and more context).
-        
-        input_ids_chunk = input_ids[:, begin_loc : end_loc]
-        
-        # Calculate target length (the number of tokens at the END of this chunk we want to evaluate)
-        # If this is the first window, we evaluate everything we see? 
-        # Standard practice:
-        # Window 1 [0:2048]: Eval [0:2048]
-        # Window 2 [512:2560] (Stride=512): Eval [2048:2560]? No that skips [512:2048] redundancy.
-        # The `prev_end_loc` variable tracks what we have already covered.
+        # Update description with position info
+        pbar.set_description(f"PPL | Window: [{begin_loc}:{end_loc}] | Target: {trg_len} toks")
         
         trg_len = end_loc - prev_end_loc 
         if trg_len <= 0: break
@@ -156,9 +112,12 @@ def compute_accuracy_sliding_window(model, input_ids, stride=512, context_len=No
     prev_end_loc = 0
     
     # Reuse exact same loop structure as PPL
-    for begin_loc in tqdm(range(0, seq_len, stride), desc="Calculating Accuracy"):
+    pbar = tqdm(range(0, seq_len, stride), desc="Accuracy")
+    for begin_loc in pbar:
         end_loc = min(begin_loc + context_len, seq_len)
         trg_len = end_loc - prev_end_loc
+        
+        pbar.set_description(f"ACC | Window: [{begin_loc}:{end_loc}] | Target: {trg_len} toks")
         
         if trg_len <= 0: break
         
