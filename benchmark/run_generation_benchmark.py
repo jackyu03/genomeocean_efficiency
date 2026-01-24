@@ -118,6 +118,7 @@ def main():
             log.info(f"Perplexity: {ppl:.4f} | NLL: {nll:.4f}")
             
             # B. Accuracy (Sliding Window)
+            # Uses the same stride/context logic as Perplexity to ensure consistent coverage
             log.info("Calculating Accuracy (Sliding Window)...")
             from generation_benchmark.metrics import compute_accuracy_sliding_window
             acc = compute_accuracy_sliding_window(model, input_ids_stream, stride=stride, context_len=ctx, device=args.device)

@@ -34,17 +34,9 @@ def compute_perplexity(model, input_ids, stride=512, context_len=None, device="c
     prev_end_loc = 0
     
     # Sliding Window Loop
-    # We stride across the sequence.
-    # For each step, we want to predict tokens [begin_loc : end_loc] 
-    # using context [0 : end_loc] (clipped to max_len).
+    # We stride across the sequence, predicting [begin_loc : end_loc]
+    # using context [begin_loc : end_loc] (clipped to max_len).
     
-    # PPL Standard Logic (Hugging Face):
-    # Iterate `begin_loc` from 0 to seq_len by stride.
-    # end_loc = min(begin_loc + max_len, seq_len)
-    # trg_len = end_loc - prev_end_loc  (This is wrong in standard implementation, standard uses stride as target len usually)
-    
-    # Let's stick to the robust HF implementation pattern:
-    # Sliding Window Loop
     pbar = tqdm(range(0, seq_len, stride), desc="PPL")
     for begin_loc in pbar:
         end_loc = min(begin_loc + context_len, seq_len)
@@ -53,22 +45,21 @@ def compute_perplexity(model, input_ids, stride=512, context_len=None, device="c
         # Update description with position info
         pbar.set_description(f"PPL | Window: [{begin_loc}:{end_loc}] | Target: {trg_len} toks")
         
+        input_ids_chunk = input_ids[:, begin_loc : end_loc]
+
+        # Calculate target length (number of new tokens at the END of this chunk)
         trg_len = end_loc - prev_end_loc 
         if trg_len <= 0: break
         
-        # We may need to mask the left side if trg_len < input_chunk_len
-        # i.e. context is (input_len - trg_len)
-        
+        # Mask out context (previous tokens) so we don't double-count loss
         target_ids = input_ids_chunk.clone()
         if trg_len < target_ids.size(1):
-            target_ids[:, :-trg_len] = -100 # Mask context
+            target_ids[:, :-trg_len] = -100 
 
         with torch.no_grad():
             outputs = model(input_ids_chunk, labels=target_ids)
-            # outputs.loss is mean NLL over the valid target tokens
             
-            # We must weight it by number of tokens to compute total NLL sum
-            # Note: outputs.loss is scalar mean
+            # outputs.loss is scalar mean NLL over valid target tokens
             nlls.append(outputs.loss * trg_len)
 
         prev_end_loc = end_loc
@@ -129,7 +120,6 @@ def compute_accuracy_sliding_window(model, input_ids, stride=512, context_len=No
             
         # Shift logits and labels for next-token prediction
         # Logic: logits[i] predicts input[i+1]
-        
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = input_ids_chunk[..., 1:].contiguous()
         
@@ -139,29 +129,12 @@ def compute_accuracy_sliding_window(model, input_ids, stride=512, context_len=No
         # Calculate boolean correctness tensor
         correct_mask = (preds == shift_labels) # (1, L-1)
         
-        # Now we only want to count the LAST `trg_len` tokens.
-        # But wait, shift_len is L-1.
-        # If input len is 2048, we have 2047 predictions.
-        # If trg_len is 512 (meaning we want to evaluate the last 512 tokens of the INPUT),
-        # that corresponds to the last 512 positions in the labels.
-        
-        # Correctly slicing the target area:
-        # We want to evaluate input_ids_chunk[ -trg_len : ]
-        # These correspond to labels[ -trg_len : ] inside shift_labels.
-        # And correct_mask[ -trg_len : ]
-        
-        # Handle edge case where trg_len equals input len (first window)
-        # If trg_len == input_len, we evaluate everything.
-        # But we lose 1 token due to shift? 
-        # Typically PPL calculation ignores the very first token of the entire sequence because it has no context.
-        # The shift operation handles that (L -> L-1).
-        
-        # Slice the relevant part of the mask
+        # Slice relevant part of the mask: last `trg_len` tokens
         if trg_len >= correct_mask.size(1):
-            # Evaluate all available predictions
+            # Evaluate all available predictions (first window case)
             eval_mask = correct_mask
         else:
-            # Evaluate only the last trg_len predictions
+            # Evaluate only the last trg_len predictions (sliding window case)
             eval_mask = correct_mask[:, -trg_len:]
             
         total_correct += eval_mask.sum().item()
