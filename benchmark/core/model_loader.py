@@ -5,21 +5,23 @@ Modify the load_model() function to test different loading strategies.
 """
 
 import torch
-from transformers import AutoTokenizer, AutoModel, AutoConfig, BitsAndBytesConfig
+from transformers import AutoTokenizer, AutoModel, AutoConfig, BitsAndBytesConfig, AutoModelForCausalLM
 import logging
 import os
 
 log = logging.getLogger("model_loader")
 
 
-def load_model_standard(model_name: str, device: str, dtype: torch.dtype):
+def load_model_standard(model_name: str, device: str, dtype: torch.dtype, model_type: str = "base"):
     """Standard model loading without quantization."""
-    log.info(f"Loading model (standard): {model_name}")
+    log.info(f"Loading model (standard, type={model_type}): {model_name}")
     
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
     
-    model = AutoModel.from_pretrained(
+    model_class = AutoModelForCausalLM if model_type == "causal" else AutoModel
+    
+    model = model_class.from_pretrained(
         model_name,
         torch_dtype=dtype,
         device_map="auto" if device == "cuda" else None,
@@ -53,9 +55,9 @@ def load_model_4bit(model_name: str, device: str, dtype: torch.dtype):
     return model, tokenizer, config
 
 
-def load_model_8bit(model_name: str, device: str, dtype: torch.dtype):
+def load_model_8bit(model_name: str, device: str, dtype: torch.dtype, model_type: str = "base"):
     """8-bit quantized model loading with BitsAndBytesConfig."""
-    log.info(f"Loading model (8-bit quantized): {model_name}")
+    log.info(f"Loading model (8-bit quantized, type={model_type}): {model_name}")
     
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
@@ -64,7 +66,9 @@ def load_model_8bit(model_name: str, device: str, dtype: torch.dtype):
         load_in_8bit=True
     )
     
-    model = AutoModel.from_pretrained(
+    model_class = AutoModelForCausalLM if model_type == "causal" else AutoModel
+    
+    model = model_class.from_pretrained(
         model_name,
         quantization_config=quantization_config,
         device_map="auto" if device == "cuda" else None,
@@ -127,7 +131,7 @@ def load_model_4bit_nf4_double(model_name: str, device: str, dtype: torch.dtype)
 # MAIN LOADING FUNCTION - CONTROLLED BY ENVIRONMENT VARIABLE
 # =============================================================================
 
-def load_model(model_name: str, device: str, dtype: torch.dtype):
+def load_model(model_name: str, device: str, dtype: torch.dtype, model_type: str = "base"):
     """
     Main model loading function controlled by QUANT_MODE environment variable.
     
@@ -142,6 +146,7 @@ def load_model(model_name: str, device: str, dtype: torch.dtype):
         model_name: HuggingFace model identifier
         device: "cuda" or "cpu"
         dtype: torch.dtype (e.g., torch.float16, torch.bfloat16)
+        model_type: "base" (AutoModel) or "causal" (AutoModelForCausalLM)
     
     Returns:
         tuple: (model, tokenizer, config)
@@ -150,7 +155,7 @@ def load_model(model_name: str, device: str, dtype: torch.dtype):
     quant_mode = os.environ.get("QUANT_MODE", "standard").lower()
     
     if quant_mode == "8bit":
-        return load_model_8bit(model_name, device, dtype)
+        return load_model_8bit(model_name, device, dtype, model_type=model_type)
     elif quant_mode == "4bit_nf4":
         return load_model_4bit(model_name, device, dtype)
     elif quant_mode == "4bit_fp4":
@@ -158,10 +163,10 @@ def load_model(model_name: str, device: str, dtype: torch.dtype):
     elif quant_mode == "4bit_nf4_double":
         return load_model_4bit_nf4_double(model_name, device, dtype)
     elif quant_mode == "standard":
-        return load_model_standard(model_name, device, dtype)
+        return load_model_standard(model_name, device, dtype, model_type=model_type)
     else:
         log.warning(f"Unknown QUANT_MODE '{quant_mode}', falling back to standard loading")
-        return load_model_standard(model_name, device, dtype)
+        return load_model_standard(model_name, device, dtype, model_type=model_type)
 
 
 def get_model_info(config, model):
