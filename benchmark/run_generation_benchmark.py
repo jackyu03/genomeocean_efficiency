@@ -85,6 +85,8 @@ def main():
         
     # 2. Tokenize & Benchmark Loop
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+    log.info(f"Tokenizer: {type(tokenizer).__name__}")
+    log.info(f"Vocab Size: {tokenizer.vocab_size}")
     modes = args.quant_modes
     results = []
     
