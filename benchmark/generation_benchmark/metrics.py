@@ -145,13 +145,25 @@ def compute_metrics_sliding_window(model, input_ids, stride=512, context_len=Non
     }
 
 # Re-implementing strictly to return correct counts
-def compute_metrics_sliding_window_strict(model, input_ids, stride=512, context_len=None, device="cuda"):
+def compute_metrics_sliding_window(model, input_ids, stride=512, context_len=None, verbose=False, device="cuda"):
+    """
+    Computes both Perplexity (NLL) and Next-Token Accuracy using a sliding window.
+    
+    Args:
+        model: AutoModelForCausalLM
+        input_ids: Tensor of shape (1, seq_len)
+        stride: Window stride
+        context_len: Max context length.
+        verbose: If True, show detailed sliding window progress bar.
+        device: "cuda"
+    """
     model.eval()
     input_ids = input_ids.to(device)
     
     if context_len is None:
         context_len = getattr(model.config, "max_position_embeddings", 2048)
-        if not isinstance(context_len, int) or context_len > 100000: context_len = 2048
+        if not isinstance(context_len, int) or context_len > 100000:
+             context_len = 2048
              
     seq_len = input_ids.size(1)
     
@@ -161,13 +173,19 @@ def compute_metrics_sliding_window_strict(model, input_ids, stride=512, context_
     total_tokens_acc = 0
     prev_end_loc = 0
     
-    pbar = tqdm(range(0, seq_len, stride), desc="Evaluating")
-    for begin_loc in pbar:
+    # Progress Bar (Only if verbose)
+    # If not verbose, we still iterate but without the bar to keep logs clean
+    iterator = range(0, seq_len, stride)
+    if verbose:
+        iterator = tqdm(iterator, desc="Evaluating", leave=False)
+    
+    for begin_loc in iterator:
         end_loc = min(begin_loc + context_len, seq_len)
         trg_len = end_loc - prev_end_loc
         if trg_len <= 0: break
         
-        pbar.set_description(f"Eval | [{begin_loc}:{end_loc}] | Tgt: {trg_len}")
+        if verbose:
+            iterator.set_description(f"Eval | [{begin_loc}:{end_loc}] | Tgt: {trg_len}")
         
         input_ids_chunk = input_ids[:, begin_loc : end_loc]
         target_ids = input_ids_chunk.clone()
