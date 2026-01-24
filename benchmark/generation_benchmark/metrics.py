@@ -4,90 +4,25 @@ import torch.nn as nn
 from tqdm import tqdm
 import math
 
-def compute_perplexity(model, input_ids, stride=512, context_len=None, device="cuda"):
+def compute_metrics_sliding_window(model, input_ids, stride=512, context_len=None, device="cuda"):
     """
-    Computes perplexity using a sliding window approach.
+    Computes both Perplexity (NLL) and Next-Token Accuracy using a sliding window.
+    Optimized to run in a single forward pass per window.
     
     Args:
         model: AutoModelForCausalLM
         input_ids: Tensor of shape (1, seq_len)
         stride: Window stride
-        context_len: Max context length (window size). If None, auto-detects.
-        device: "cuda" or "cpu"
-        
-    Returns:
-        ppl: float
-        nll: float (average negative log likelihood)
-    """
-    model.eval()
-    input_ids = input_ids.to(device)
-    
-    # Auto-detect context length if not provided
-    if context_len is None:
-        context_len = getattr(model.config, "max_position_embeddings", 2048)
-        # Handle edge cases (some models set it to enormous values)
-        if not isinstance(context_len, int) or context_len > 100000:
-             context_len = 2048
-
-    seq_len = input_ids.size(1)
-    nlls = []
-    prev_end_loc = 0
-    
-    # Sliding Window Loop
-    # We stride across the sequence, predicting [begin_loc : end_loc]
-    # using context [begin_loc : end_loc] (clipped to max_len).
-    
-    pbar = tqdm(range(0, seq_len, stride), desc="PPL")
-    for begin_loc in pbar:
-        end_loc = min(begin_loc + context_len, seq_len)
-        trg_len = end_loc - prev_end_loc  
-        
-        # Update description with position info
-        pbar.set_description(f"PPL | Window: [{begin_loc}:{end_loc}] | Target: {trg_len} toks")
-        
-        input_ids_chunk = input_ids[:, begin_loc : end_loc]
-
-        # Calculate target length (number of new tokens at the END of this chunk)
-        trg_len = end_loc - prev_end_loc 
-        if trg_len <= 0: break
-        
-        # Mask out context (previous tokens) so we don't double-count loss
-        target_ids = input_ids_chunk.clone()
-        if trg_len < target_ids.size(1):
-            target_ids[:, :-trg_len] = -100 
-
-        with torch.no_grad():
-            outputs = model(input_ids_chunk, labels=target_ids)
-            
-            # outputs.loss is scalar mean NLL over valid target tokens
-            nlls.append(outputs.loss * trg_len)
-
-        prev_end_loc = end_loc
-        if end_loc == seq_len:
-            break
-
-    total_nll = torch.stack(nlls).sum()
-    total_tokens = end_loc
-    
-    avg_nll = total_nll / total_tokens
-    ppl = torch.exp(avg_nll)
-    
-    return ppl.item(), avg_nll.item()
-
-
-def compute_accuracy_sliding_window(model, input_ids, stride=512, context_len=None, device="cuda"):
-    """
-    Computes next-token prediction accuracy using the same sliding window logic as Perplexity.
-    
-    Args:
-        model: AutoModelForCausalLM
-        input_ids: Tensor of shape (1, seq_len)
-        stride: Window stride (evaluation step size)
         context_len: Max context length.
         device: "cuda"
         
     Returns:
-        accuracy: float (0.0 to 1.0)
+        dict: {
+            'perplexity': float,
+            'neg_log_likelihood': float,
+            'accuracy': float,
+            'total_tokens': int
+        }
     """
     model.eval()
     input_ids = input_ids.to(device)
@@ -98,50 +33,199 @@ def compute_accuracy_sliding_window(model, input_ids, stride=512, context_len=No
              context_len = 2048
              
     seq_len = input_ids.size(1)
+    
+    nlls = []
     total_correct = 0
     total_evaluated = 0
     prev_end_loc = 0
     
-    # Reuse exact same loop structure as PPL
-    pbar = tqdm(range(0, seq_len, stride), desc="Accuracy")
+    # Progress Bar
+    pbar = tqdm(range(0, seq_len, stride), desc="Evaluating")
+    
     for begin_loc in pbar:
         end_loc = min(begin_loc + context_len, seq_len)
         trg_len = end_loc - prev_end_loc
         
-        pbar.set_description(f"ACC | Window: [{begin_loc}:{end_loc}] | Target: {trg_len} toks")
-        
+        # Determine effective target area (new tokens)
         if trg_len <= 0: break
+        
+        pbar.set_description(f"Eval | Window: [{begin_loc}:{end_loc}] | Target: {trg_len} toks")
         
         input_ids_chunk = input_ids[:, begin_loc : end_loc]
         
+        # Prepare targets for Loss calculation
+        # Mask out context (tokens we already evaluated or serve as history)
+        target_ids = input_ids_chunk.clone()
+        if trg_len < target_ids.size(1):
+            target_ids[:, :-trg_len] = -100 
+            
         with torch.no_grad():
-            outputs = model(input_ids_chunk)
-            logits = outputs.logits # (1, L, V)
+            outputs = model(input_ids_chunk, labels=target_ids)
             
-        # Shift logits and labels for next-token prediction
-        # Logic: logits[i] predicts input[i+1]
-        shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = input_ids_chunk[..., 1:].contiguous()
-        
-        # Get predictions
-        preds = torch.argmax(shift_logits, dim=-1) # (1, L-1)
-        
-        # Calculate boolean correctness tensor
-        correct_mask = (preds == shift_labels) # (1, L-1)
-        
-        # Slice relevant part of the mask: last `trg_len` tokens
-        if trg_len >= correct_mask.size(1):
-            # Evaluate all available predictions (first window case)
-            eval_mask = correct_mask
-        else:
-            # Evaluate only the last trg_len predictions (sliding window case)
-            eval_mask = correct_mask[:, -trg_len:]
+            # 1. PERPLEXITY / LOSS
+            # outputs.loss is mean NLL over the valid target tokens
+            loss = outputs.loss
+            nlls.append(loss * trg_len)
             
-        total_correct += eval_mask.sum().item()
-        total_evaluated += eval_mask.numel()
-        
+            # 2. ACCURACY
+            logits = outputs.logits
+            
+            # Shift for prediction: logits[i] predicts input[i+1]
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = input_ids_chunk[..., 1:].contiguous()
+            
+            preds = torch.argmax(shift_logits, dim=-1)
+            correct_mask = (preds == shift_labels)
+            
+            # Slice relevant part of the mask: last `trg_len` tokens
+            # Note: shift_labels matches `target_ids` logic but offset by 1 position conceptually in stream
+            # The shift operation reduces length by 1.
+            # If trg_len == input_len (first window), we take all available predictions
+            
+            if trg_len >= correct_mask.size(1):
+                eval_mask = correct_mask
+            else:
+                eval_mask = correct_mask[:, -trg_len:]
+                
+            total_correct += eval_mask.sum().item()
+            
         prev_end_loc = end_loc
         if end_loc == seq_len:
             break
             
-    return total_correct / total_evaluated if total_evaluated > 0 else 0.0
+    # Aggregate Metrics
+    total_evaluated_tokens = sum([nll.numel() for nll in nlls]) if False else total_correct # No, wait, total_evaluated is sum of trg_len?
+    # Correct accounting:
+    # nlls contains (loss_mean * trg_len). Summing them gives Total NLL Sum.
+    # total_correct is sum of correct predictions.
+    
+    # Re-calculate total tokens just to be safe from loop
+    # Actually, we tracked trg_len in loop.
+    # Let's trust total_evaluated if we tracked it
+    # Fix: We didn't increment total_evaluated in loop above properly.
+    
+    # Re-calculating total tokens from NLL stack is safest?
+    # No, let's use the explicit sum of trg_len tokens we processed.
+    # Actually, nlls.append(loss * trg_len) -> loss is scalar.
+    total_token_count = end_loc # This is just total seq len? No, we skip overlap.
+    # The effective tokens we evaluated is "end_loc" minus "initial skipped"?
+    # For standard PPL, total tokens = end_loc usually.
+    # Let's use `pbar.n` derived logic or just sum chunks.
+    
+    # Robust way:
+    total_nll_sum = torch.stack(nlls).sum().item()
+    
+    # We need exact count of tokens that contributed to 'loss'.
+    # In the loop, we multiplied by `trg_len`. So we should sum those `trg_len` values.
+    # But wait, does `trg_len` account for the "shift -1" in accuracy?
+    # Accuracy loses 1 token at the very start of the sequence.
+    # Loss calculation (HF default) also ignores the last token prediction if labels are shifted internally? 
+    # Actually AutoModelForCausalLM handles shifting internally for Loss.
+    # So Loss covers `trg_len` tokens exactly?
+    # Usually `input_id` length L -> Loss calculated on L-1 tokens?
+    # If using `labels`, HF model shifts labels. 
+    # Labels: [A, B, C, D]. Model predicts [B, C, D, ?].
+    # So we evaluate L-1 predictions.
+    
+    # Accuracy logic shifted manually: L -> L-1.
+    # So `eval_mask` size is `trg_len` (if we sliced) OR `trg_len - 1` (at start)?
+    # Let's assume for large sequences, the 1 token difference is negligible.
+    # But to be precise:
+    # Use `total_correct / total_accuracy_tokens`.
+    
+    # Since we didn't track total acc tokens in loop, let's just re-run logic or trust broad counts.
+    # Let's assume total_token_count ~ end_loc.
+    
+    # Refined Loop to strictly track count
+    return {
+        'perplexity': math.exp(total_nll_sum / end_loc),
+        'neg_log_likelihood': total_nll_sum / end_loc,
+        'accuracy': total_correct / end_loc, # Approx
+        'total_tokens': end_loc
+    }
+
+# Re-implementing strictly to return correct counts
+def compute_metrics_sliding_window_strict(model, input_ids, stride=512, context_len=None, device="cuda"):
+    model.eval()
+    input_ids = input_ids.to(device)
+    
+    if context_len is None:
+        context_len = getattr(model.config, "max_position_embeddings", 2048)
+        if not isinstance(context_len, int) or context_len > 100000: context_len = 2048
+             
+    seq_len = input_ids.size(1)
+    
+    nll_sum = 0.0
+    acc_correct = 0
+    total_tokens_loss = 0
+    total_tokens_acc = 0
+    prev_end_loc = 0
+    
+    pbar = tqdm(range(0, seq_len, stride), desc="Evaluating")
+    for begin_loc in pbar:
+        end_loc = min(begin_loc + context_len, seq_len)
+        trg_len = end_loc - prev_end_loc
+        if trg_len <= 0: break
+        
+        pbar.set_description(f"Eval | [{begin_loc}:{end_loc}] | Tgt: {trg_len}")
+        
+        input_ids_chunk = input_ids[:, begin_loc : end_loc]
+        target_ids = input_ids_chunk.clone()
+        if trg_len < target_ids.size(1):
+            target_ids[:, :-trg_len] = -100 
+            
+        with torch.no_grad():
+            outputs = model(input_ids_chunk, labels=target_ids)
+            
+            # Loss
+            # outputs.loss is computed over tokens where labels != -100
+            # We assume HF internals work correctly.
+            # But we must know HOW MANY tokens were valid to un-average the mean.
+            # Valid tokens = (target_ids != -100).sum()
+            # Note: HF shifts labels by 1 internally. 
+            # So actual valid tokens = (target_ids[..., 1:] != -100).sum()
+            
+            # Let's count explicitly
+            # Be careful with the shift.
+            # target_ids has same shape as input. 
+            # Shifted labels -> size L-1.
+            
+            valid_loss_tokens = (target_ids[:, 1:] != -100).sum().item()
+            if valid_loss_tokens > 0:
+                nll_sum += outputs.loss.item() * valid_loss_tokens
+                total_tokens_loss += valid_loss_tokens
+            
+            # Accuracy
+            logits = outputs.logits
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = input_ids_chunk[..., 1:].contiguous()
+            preds = torch.argmax(shift_logits, dim=-1)
+            
+            # We need to apply the SAME mask logic to accuracy
+            # The target_ids mask was for INPUT (before shift).
+            # We masked the first (L - trg_len) tokens.
+            # So in the shifted labels, we should mask the first (L - trg_len - 1)?
+            # Actually simpler: just use the -100 mask from target_ids on the shifted labels!
+            
+            # Shift the target_ids too to see which ones are valid
+            shift_target_mask = target_ids[:, 1:] != -100
+            
+            correct_preds = (preds == shift_labels) & shift_target_mask
+            acc_correct += correct_preds.sum().item()
+            total_tokens_acc += shift_target_mask.sum().item()
+
+        prev_end_loc = end_loc
+        if end_loc == seq_len: break
+            
+    avg_nll = nll_sum / total_tokens_loss if total_tokens_loss > 0 else 0.0
+    accuracy = acc_correct / total_tokens_acc if total_tokens_acc > 0 else 0.0
+    
+    return {
+        'perplexity': math.exp(avg_nll),
+        'neg_log_likelihood': avg_nll,
+        'accuracy': accuracy,
+        'total_tokens': total_tokens_loss
+    }
+
+# Alias for compatibility
+compute_metrics_sliding_window = compute_metrics_sliding_window_strict

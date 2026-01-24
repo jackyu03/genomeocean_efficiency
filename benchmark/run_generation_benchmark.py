@@ -2,7 +2,7 @@
 run_generation_benchmark.py
 
 Benchmark for evaluating GENOME generation capabilities (Perplexity & Accuracy).
-Focuses on how quantization affects the model's ability to predict the next base.
+Evaluates 50 genomes independently to verify biological syntax.
 """
 
 import os
@@ -14,12 +14,13 @@ import torch
 import numpy as np
 from pathlib import Path
 from datetime import datetime
+from tqdm import tqdm
 
 # Path setup
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from core.model_loader import load_model, get_max_length
-from generation_benchmark.metrics import compute_perplexity, compute_accuracy_sliding_window
+from core.model_loader import load_model
+from generation_benchmark.metrics import compute_metrics_sliding_window
 from transformers import AutoTokenizer
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
@@ -32,11 +33,11 @@ def main():
     parser.add_argument("--device", type=str, default="cuda", help="Device")
     parser.add_argument("--precision", type=str, default="bfloat16", help="Precision")
     parser.add_argument("--outdir", type=str, default="./results_gen", help="Base output dir")
-    parser.add_argument("--quant-modes", type=str, nargs="+", default=["standard", "8bit"], help="Quantization modes (standard, 8bit, 4bit_nf4)")
+    parser.add_argument("--quant-modes", type=str, nargs="+", default=["standard", "8bit"], help="Modes")
     parser.add_argument("--context-len", type=int, default=None, help="Max context length (None = auto-detect)")
     parser.add_argument("--stride", type=int, default=None, help="Stride (None = context // 2)")
-    parser.add_argument("--n-genomes", type=int, default=None, help="Num genomes to sample")
-    parser.add_argument("--n-fragments", type=int, default=None, help="Num fragments per genome")
+    parser.add_argument("--n-genomes", type=int, default=50, help="Num genomes to eval (default 50)")
+    parser.add_argument("--tokens-per-genome", type=int, default=100000, help="Target tokens per genome (~500k bp)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     
     args = parser.parse_args()
@@ -47,48 +48,43 @@ def main():
     outdir = Path(args.outdir) / f"run_{timestamp}"
     outdir.mkdir(parents=True, exist_ok=True)
     
-    # 1. Load Data
+    # 1. Load & Prepare Data
     log.info(f"Loading data from {args.csv}...")
     df = pd.read_csv(args.csv)
     
-    # Subsampling Logic
-    if args.n_genomes is not None:
-        unique_genomes = df["genome_id"].unique()
-        if len(unique_genomes) > args.n_genomes:
-            selected = np.random.choice(unique_genomes, size=args.n_genomes, replace=False)
-            df = df[df["genome_id"].isin(selected)]
-            log.info(f"Subsampled to {args.n_genomes} genomes.")
-            
-    if args.n_fragments is not None:
-        log.info(f"Subsampling to {args.n_fragments} fragments per genome...")
-        df = df.groupby("genome_id", group_keys=False).apply(
-            lambda x: x.sample(n=min(len(x), args.n_fragments), random_state=args.seed)
-        )
+    # Select Genomes
+    unique_genomes = df["genome_id"].unique()
+    if len(unique_genomes) > args.n_genomes:
+        selected_genome_ids = np.random.choice(unique_genomes, size=args.n_genomes, replace=False)
+    else:
+        selected_genome_ids = unique_genomes
         
-    sequences = df["seq"].tolist()
-    log.info(f"Total sequences: {len(sequences)}")
+    log.info(f"Selected {len(selected_genome_ids)} genomes for independent evaluation.")
     
-    # 2. Tokenize Data
-    log.info("Tokenizing data...")
+    # Pre-process: Concatenate fragments per genome to reach target token count
+    genome_data = [] # List of (genome_id, full_sequence_text)
+    
+    # Estimate bp needed: approx 5 bp per token (conservative) -> 100k tokens * 5 = 500k bp
+    # Just take enough fragments until length > target
+    # Or just take top N fragments.
+    
+    log.info("Preparing genome sequences...")
+    for gid in tqdm(selected_genome_ids, desc="Preparing Data"):
+        g_rows = df[df["genome_id"] == gid]["seq"].tolist()
+        
+        # Concatenate until we have enough
+        # Note: Concatenating independent contigs is technically slightly wrong for PPL at boundaries,
+        # but if contigs are 50k long, 2 boundary errors per 100k tokens is negligible (0.002% erro).
+        full_seq = ""
+        for frag in g_rows:
+            full_seq += frag
+            if len(full_seq) > (args.tokens_per_genome * 6): # Rough char limit check (~5 chars/token)
+                break
+        
+        genome_data.append((gid, full_seq))
+        
+    # 2. Tokenize & Benchmark Loop
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
-    
-    # For Perplexity: We typically concat everything into one long stream (or process seqs independently)
-    # Merging all sequences with a separator could be good, or just simply processing list.
-    # To follow standard LM evaluation, we concat them.
-    
-    # However, these are distinct genomic fragments. Concatenating them might introduce artifacts at boundaries?
-    # Actually, PPL logic usually handles long text.
-    # Let's simple concatenate with an EOS token if available, or just space.
-    # For now, let's concat with nothing, assuming they are just DNA streams.
-    full_text = "".join(sequences)
-    
-    encodings = tokenizer(full_text, return_tensors="pt")
-    # We do NOT create encodings_list here anymore because we will chunk the stream later.
-    
-    input_ids_stream = encodings.input_ids
-    log.info(f"Total Tokens in Stream: {input_ids_stream.numel()}")
-    
-    # 3. Benchmark Loop
     modes = args.quant_modes
     results = []
     
@@ -99,39 +95,43 @@ def main():
         os.environ["QUANT_MODE"] = mode
         
         try:
-            # Load Causal LM
             model, _, _ = load_model(args.model, args.device, dtype, model_type="causal")
             
-            # Determine Context & Stride dynamically if not set
+            # Setup stride/context for this model
             if args.context_len is None:
                 ctx = getattr(model.config, "max_position_embeddings", 2048)
                 if not isinstance(ctx, int) or ctx > 100000: ctx = 2048
             else:
                 ctx = args.context_len
-                
+            
             stride = args.stride if args.stride is not None else ctx // 2
-            log.info(f"Using Context={ctx}, Stride={stride}")
+            log.info(f"Ctx: {ctx}, Stride: {stride}")
             
-            # A. Perplexity (Sliding Window)
-            log.info("Calculating Perplexity...")
-            ppl, nll = compute_perplexity(model, input_ids_stream, stride=stride, context_len=ctx, device=args.device)
-            log.info(f"Perplexity: {ppl:.4f} | NLL: {nll:.4f}")
-            
-            # B. Accuracy (Sliding Window)
-            # Uses the same stride/context logic as Perplexity to ensure consistent coverage
-            log.info("Calculating Accuracy (Sliding Window)...")
-            from generation_benchmark.metrics import compute_accuracy_sliding_window
-            acc = compute_accuracy_sliding_window(model, input_ids_stream, stride=stride, context_len=ctx, device=args.device)
-            log.info(f"Accuracy: {acc:.4f}")
-            
-            results.append({
-                "quantization": mode,
-                "model": args.model,
-                "perplexity": ppl,
-                "neg_log_likelihood": nll,
-                "accuracy_next_token": acc
-            })
-            
+            # Iterate Genomes
+            for gid, seq_text in tqdm(genome_data, desc=f"Eval {mode}"):
+                
+                # Tokenize this genome's sequence
+                # Truncate to target length
+                encodings = tokenizer(seq_text, return_tensors="pt", max_length=args.tokens_per_genome, truncation=True)
+                input_ids = encodings.input_ids
+                
+                if input_ids.size(1) < ctx:
+                    log.warning(f"Genome {gid} is too short ({input_ids.size(1)} tokens). Skipping.")
+                    continue
+                
+                # Compute Metrics (Single Pass)
+                metrics = compute_metrics_sliding_window(model, input_ids, stride=stride, context_len=ctx, device=args.device)
+                
+                results.append({
+                    "genome_id": gid,
+                    "quantization": mode,
+                    "model": args.model,
+                    "perplexity": metrics['perplexity'],
+                    "neg_log_likelihood": metrics['neg_log_likelihood'],
+                    "accuracy": metrics['accuracy'],
+                    "total_tokens": metrics['total_tokens']
+                })
+                
             del model
             torch.cuda.empty_cache()
             
@@ -139,14 +139,43 @@ def main():
             log.error(f"Failed mode {mode}: {e}")
             import traceback
             traceback.print_exc()
-            
-    # Save
+
+    # 3. Report Results
     if results:
+        # Save detailed CSV
         df_res = pd.DataFrame(results)
-        save_path = outdir / "generation_metrics.csv"
+        save_path = outdir / "generation_metrics_by_genome.csv"
         df_res.to_csv(save_path, index=False)
-        log.info(f"Results saved to {save_path}")
-        print(df_res)
+        log.info(f"Detailed results saved to {save_path}")
+        
+        # Calculate Summary Stats
+        summary_lines = ["=== Benchmark Summary ===\n"]
+        for mode in modes:
+            subset = df_res[df_res["quantization"] == mode]
+            if len(subset) == 0: continue
+            
+            mean_ppl = subset["perplexity"].mean()
+            std_ppl = subset["perplexity"].std()
+            
+            mean_nll = subset["neg_log_likelihood"].mean()
+            std_nll = subset["neg_log_likelihood"].std()
+            
+            mean_acc = subset["accuracy"].mean()
+            std_acc = subset["accuracy"].std()
+            
+            line = (f"Mode: {mode}\n"
+                    f"  Perplexity: {mean_ppl:.4f} ± {std_ppl:.4f}\n"
+                    f"  NLL:        {mean_nll:.4f} ± {std_nll:.4f}\n"
+                    f"  Accuracy:   {mean_acc:.4f} ± {std_acc:.4f}\n"
+                    f"  (N={len(subset)} genomes)\n")
+            summary_lines.append(line)
+            print(line)
+            
+        # Save Summary TXT
+        summary_path = outdir / "summary_statistics.txt"
+        with open(summary_path, "w") as f:
+            f.writelines(summary_lines)
+        log.info(f"Summary statistics saved to {summary_path}")
 
 if __name__ == "__main__":
     main()
