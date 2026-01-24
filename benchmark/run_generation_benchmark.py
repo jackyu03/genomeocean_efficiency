@@ -108,7 +108,9 @@ def main():
             log.info(f"Ctx: {ctx}, Stride: {stride}")
             
             # Iterate Genomes
-            for gid, seq_text in tqdm(genome_data, desc=f"Eval {mode}"):
+            genome_pbar = tqdm(enumerate(genome_data), total=len(genome_data), desc=f"Eval {mode}")
+            for i, (gid, seq_text) in genome_pbar:
+                genome_pbar.set_description(f"Eval {mode} | Genome: {gid} ({i+1}/{len(genome_data)})")
                 
                 # Tokenize this genome's sequence
                 # Truncate to target length
