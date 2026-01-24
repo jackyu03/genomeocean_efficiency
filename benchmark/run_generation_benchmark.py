@@ -32,7 +32,9 @@ def main():
     parser.add_argument("--device", type=str, default="cuda", help="Device")
     parser.add_argument("--precision", type=str, default="bfloat16", help="Precision")
     parser.add_argument("--outdir", type=str, default="./results_gen", help="Base output dir")
-    parser.add_argument("--stride", type=int, default=512, help="Stride for PPL calculation")
+    parser.add_argument("--quant-modes", type=str, nargs="+", default=["standard", "8bit"], help="Quantization modes (standard, 8bit, 4bit_nf4)")
+    parser.add_argument("--context-len", type=int, default=None, help="Max context length (None = auto-detect)")
+    parser.add_argument("--stride", type=int, default=None, help="Stride (None = context // 2)")
     parser.add_argument("--n-genomes", type=int, default=None, help="Num genomes to sample")
     parser.add_argument("--n-fragments", type=int, default=None, help="Num fragments per genome")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
@@ -87,8 +89,7 @@ def main():
     log.info(f"Total Tokens in Stream: {input_ids_stream.numel()}")
     
     # 3. Benchmark Loop
-    # Only standard and 8bit for now
-    modes = ["standard", "8bit"]
+    modes = args.quant_modes
     results = []
     
     dtype = getattr(torch, args.precision)
@@ -101,34 +102,25 @@ def main():
             # Load Causal LM
             model, _, _ = load_model(args.model, args.device, dtype, model_type="causal")
             
-            # A. Perplexity
+            # Determine Context & Stride dynamically if not set
+            if args.context_len is None:
+                ctx = getattr(model.config, "max_position_embeddings", 2048)
+                if not isinstance(ctx, int) or ctx > 100000: ctx = 2048
+            else:
+                ctx = args.context_len
+                
+            stride = args.stride if args.stride is not None else ctx // 2
+            log.info(f"Using Context={ctx}, Stride={stride}")
+            
+            # A. Perplexity (Sliding Window)
             log.info("Calculating Perplexity...")
-            ppl, nll = compute_perplexity(model, input_ids_stream, stride=args.stride, device=args.device)
+            ppl, nll = compute_perplexity(model, input_ids_stream, stride=stride, context_len=ctx, device=args.device)
             log.info(f"Perplexity: {ppl:.4f} | NLL: {nll:.4f}")
             
-            # B. Accuracy (Evaluated on CHUNKED fragments to handle 50k bp length)
-            # Since sequences are long (50k bp) and model context is small (e.g. 2k), we MUST chunk them.
-            # We reuse the logic: extract chunks from the full text stream or individual sequences.
-            # To match PPL's coverage, we can just use the PPL stride logic but compute accuracy on batches.
-            
-            log.info("Calculating Next-Token Accuracy (chunked)...")
-            
-            # Create chunks (stride=context_len to be efficient, or overlapping?)
-            # Standard eval often uses non-overlapping windows for speed, or sliding window for precision.
-            # Let's use 2048 non-overlapping for accuracy speed, or 2048 with stride 2048.
-            target_context = 2048 
-            
-            # We already have `input_ids_stream` which is the FULL concatenated text.
-            # Let's split it into chunks of 2048.
-            # (1, N) -> List of (1, 2048)
-            total_tokens = input_ids_stream.size(1)
-            chunks = []
-            for i in range(0, total_tokens, target_context):
-                chunk = input_ids_stream[:, i : min(i + target_context, total_tokens)]
-                if chunk.size(1) > 1: # Need at least 2 tokens to predict
-                    chunks.append(chunk)
-            
-            acc = compute_accuracy(model, chunks, device=args.device, batch_size=4)
+            # B. Accuracy (Sliding Window)
+            log.info("Calculating Accuracy (Sliding Window)...")
+            from generation_benchmark.metrics import compute_accuracy_sliding_window
+            acc = compute_accuracy_sliding_window(model, input_ids_stream, stride=stride, context_len=ctx, device=args.device)
             log.info(f"Accuracy: {acc:.4f}")
             
             results.append({
