@@ -19,7 +19,7 @@ from tqdm import tqdm
 # Path setup
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from core.model_loader import load_model
+from core.model_loader import load_model, get_max_length
 from generation_benchmark.metrics import compute_metrics_sliding_window
 from transformers import AutoTokenizer
 
@@ -37,18 +37,85 @@ def main():
     parser.add_argument("--context-len", type=int, default=None, help="Max context length (None = auto-detect)")
     parser.add_argument("--stride", type=int, default=None, help="Stride (None = context // 2)")
     parser.add_argument("--n-genomes", type=int, default=50, help="Num genomes to eval (default 50)")
-    parser.add_argument("--tokens-per-genome", type=int, default=100000, help="Target tokens per genome (~500k bp)")
+    parser.add_argument("--tokens-per-genome", type=int, default=102400, help="Target tokens per genome (~500k bp)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--verbose", action="store_true", help="Show detailed sliding window progress")
     
     args = parser.parse_args()
     
-    # ... (Setup code is unchanged)
-
-    # ... (Load Data Loop unchanged)
-
-    # 3. Report Results
-    # Inside the loop:
+    # Setup
+    np.random.seed(args.seed)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    outdir = Path(args.outdir) / f"run_{timestamp}"
+    outdir.mkdir(parents=True, exist_ok=True)
+    
+    # 1. Load & Prepare Data
+    log.info(f"Loading data from {args.csv}...")
+    df = pd.read_csv(args.csv)
+    
+    # Select Genomes
+    unique_genomes = df["genome_id"].unique()
+    if len(unique_genomes) > args.n_genomes:
+        selected_genome_ids = np.random.choice(unique_genomes, size=args.n_genomes, replace=False)
+    else:
+        selected_genome_ids = unique_genomes
+        
+    log.info(f"Selected {len(selected_genome_ids)} genomes for independent evaluation.")
+    
+    # Pre-process: Concatenate fragments per genome to reach target token count
+    genome_data = [] # List of (genome_id, full_sequence_text)
+    
+    log.info("Preparing genome sequences...")
+    for gid in tqdm(selected_genome_ids, desc="Preparing Data"):
+        g_rows = df[df["genome_id"] == gid]["seq"].tolist()
+        
+        full_seq = ""
+        for frag in g_rows:
+            full_seq += frag
+            if len(full_seq) > (args.tokens_per_genome * 6): 
+                break
+        
+        genome_data.append((gid, full_seq))
+        
+    # 2. Tokenize & Benchmark Loop
+    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+    log.info(f"Tokenizer: {type(tokenizer).__name__}")
+    log.info(f"Vocab Size: {tokenizer.vocab_size}")
+    modes = args.quant_modes
+    results = []
+    
+    dtype = getattr(torch, args.precision)
+    
+    for mode in modes:
+        log.info(f"\n=== Evaluating Mode: {mode} ===")
+        os.environ["QUANT_MODE"] = mode
+        
+        try:
+            model, _, _ = load_model(args.model, args.device, dtype, model_type="causal")
+            
+            # Setup stride/context for this model
+            if args.context_len is None:
+                ctx = getattr(model.config, "max_position_embeddings", 2048)
+                if not isinstance(ctx, int) or ctx > 100000: ctx = 2048
+            else:
+                ctx = args.context_len
+            
+            stride = args.stride if args.stride is not None else ctx // 2
+            log.info(f"Ctx: {ctx}, Stride: {stride}")
+            
+            # Iterate Genomes
+            genome_pbar = tqdm(enumerate(genome_data), total=len(genome_data), desc=f"Eval {mode}")
+            for i, (gid, seq_text) in genome_pbar:
+                genome_pbar.set_description(f"Eval {mode} | Genome: {gid} ({i+1}/{len(genome_data)})")
+                
+                # Tokenize this genome's sequence
+                # Truncate to target length
+                encodings = tokenizer(seq_text, return_tensors="pt", max_length=args.tokens_per_genome, truncation=True)
+                input_ids = encodings.input_ids
+                
+                if input_ids.size(1) < ctx:
+                    log.warning(f"Genome {gid} is too short ({input_ids.size(1)} tokens). Skipping.")
+                    continue
                 
                 # Compute Metrics (Single Pass)
                 metrics = compute_metrics_sliding_window(
