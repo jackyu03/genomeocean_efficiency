@@ -19,7 +19,7 @@ from datetime import datetime
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from core.model_loader import load_model, get_max_length
-from generation_benchmark.metrics import compute_perplexity, compute_accuracy
+from generation_benchmark.metrics import compute_perplexity, compute_accuracy_sliding_window
 from transformers import AutoTokenizer
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
