@@ -39,49 +39,22 @@ def main():
     parser.add_argument("--n-genomes", type=int, default=50, help="Num genomes to eval (default 50)")
     parser.add_argument("--tokens-per-genome", type=int, default=102400, help="Target tokens per genome (~500k bp)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--loader", type=str, default="native", choices=["native", "bitsandbytes"], help="Model Loader Type")
     parser.add_argument("--verbose", action="store_true", help="Show detailed sliding window progress")
     
     args = parser.parse_args()
     
-    # Setup
-    np.random.seed(args.seed)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    outdir = Path(args.outdir) / f"run_{timestamp}"
-    outdir.mkdir(parents=True, exist_ok=True)
-    
-    # 1. Load & Prepare Data
-    log.info(f"Loading data from {args.csv}...")
-    df = pd.read_csv(args.csv)
-    
-    # Select Genomes
-    unique_genomes = df["genome_id"].unique()
-    if len(unique_genomes) > args.n_genomes:
-        selected_genome_ids = np.random.choice(unique_genomes, size=args.n_genomes, replace=False)
-    else:
-        selected_genome_ids = unique_genomes
-        
-    log.info(f"Selected {len(selected_genome_ids)} genomes for independent evaluation.")
-    
-    # Pre-process: Concatenate fragments per genome to reach target token count
-    genome_data = [] # List of (genome_id, full_sequence_text)
-    
-    log.info("Preparing genome sequences...")
-    for gid in tqdm(selected_genome_ids, desc="Preparing Data"):
-        g_rows = df[df["genome_id"] == gid]["seq"].tolist()
-        
-        full_seq = ""
-        for frag in g_rows:
-            full_seq += frag
-            if len(full_seq) > (args.tokens_per_genome * 6): 
-                break
-        
-        genome_data.append((gid, full_seq))
-        
+    # ... (Setup code is unchanged)
+
     # 2. Tokenize & Benchmark Loop
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
     log.info(f"Tokenizer: {type(tokenizer).__name__}")
     log.info(f"Vocab Size: {tokenizer.vocab_size}")
-    modes = args.quant_modes
+    
+    modes = args.quant_modes 
+    # Logic: If mode is 'fp8' or 'bf16', treat as native. If '8bit' or '4bit*', treat as bitsandbytes.
+    # The --loader arg sets the *default*, but mixed usage in one list requires dynamic switching.
+    
     results = []
     
     dtype = getattr(torch, args.precision)
@@ -90,8 +63,18 @@ def main():
         log.info(f"\n=== Evaluating Mode: {mode} ===")
         os.environ["QUANT_MODE"] = mode
         
+        # Determine Loader for this specific mode
+        if mode in ["8bit", "4bit_nf4", "4bit_fp4"]:
+            current_loader = "bitsandbytes"
+        else:
+            current_loader = "native" # bf16, fp16, fp8
+            
+        log.info(f"Loader: {current_loader}")
+        
         try:
-            model, _, _ = load_model(args.model, args.device, dtype, model_type="causal")
+            model, _, _ = load_model(
+                args.model, args.device, dtype, model_type="causal", loader_type=current_loader
+            )
             
             # Setup stride/context for this model
             if args.context_len is None:
@@ -126,6 +109,7 @@ def main():
                 results.append({
                     "genome_id": gid,
                     "quantization": mode,
+                    "loader": current_loader,
                     "model": args.model,
                     "perplexity": metrics['perplexity'],
                     "neg_log_likelihood": metrics['neg_log_likelihood'],

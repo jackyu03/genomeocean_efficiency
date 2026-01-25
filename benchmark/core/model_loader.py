@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Model loading configurations for benchmarking.
-Modify the load_model() function to test different loading strategies.
+Supports explicit selection between Native (dtype) and BitsAndBytes (quantization) loading.
 """
 
 import torch
@@ -11,162 +11,126 @@ import os
 
 log = logging.getLogger("model_loader")
 
-
-def load_model_standard(model_name: str, device: str, dtype: torch.dtype, model_type: str = "base"):
-    """Standard model loading without quantization."""
-    log.info(f"Loading model (standard, type={model_type}): {model_name}")
-    
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
-    
-    model_class = AutoModelForCausalLM if model_type == "causal" else AutoModel
-    
-    model = model_class.from_pretrained(
-        model_name,
-        torch_dtype=dtype,
-        device_map="auto" if device == "cuda" else None,
-        trust_remote_code=True
-    )
-    
-    return model, tokenizer, config
-
-
-def load_model_4bit(model_name: str, device: str, dtype: torch.dtype):
-    """4-bit quantized model loading with BitsAndBytesConfig."""
-    log.info(f"Loading model (4-bit quantized): {model_name}")
-    
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
-    
-    quantization_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=dtype,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4"
-    )
-    
-    model = AutoModel.from_pretrained(
-        model_name,
-        quantization_config=quantization_config,
-        device_map="auto" if device == "cuda" else None,
-        trust_remote_code=True
-    )
-    
-    return model, tokenizer, config
-
-
-def load_model_8bit(model_name: str, device: str, dtype: torch.dtype, model_type: str = "base"):
-    """8-bit quantized model loading with BitsAndBytesConfig."""
-    log.info(f"Loading model (8-bit quantized, type={model_type}): {model_name}")
-    
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
-    
-    quantization_config = BitsAndBytesConfig(
-        load_in_8bit=True
-    )
-    
-    model_class = AutoModelForCausalLM if model_type == "causal" else AutoModel
-    
-    model = model_class.from_pretrained(
-        model_name,
-        quantization_config=quantization_config,
-        device_map="auto" if device == "cuda" else None,
-        trust_remote_code=True
-    )
-    
-    return model, tokenizer, config
-
-
-def load_model_4bit_fp4(model_name: str, device: str, dtype: torch.dtype):
-    """4-bit FP4 quantized model loading."""
-    log.info(f"Loading model (4-bit FP4 quantized): {model_name}")
-    
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
-    
-    quantization_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=dtype,
-        bnb_4bit_use_double_quant=False,
-        bnb_4bit_quant_type="fp4"
-    )
-    
-    model = AutoModel.from_pretrained(
-        model_name,
-        quantization_config=quantization_config,
-        device_map="auto" if device == "cuda" else None,
-        trust_remote_code=True
-    )
-    
-    return model, tokenizer, config
-
-
-def load_model_4bit_nf4_double(model_name: str, device: str, dtype: torch.dtype):
-    """4-bit NF4 with double quantization."""
-    log.info(f"Loading model (4-bit NF4 double quantized): {model_name}")
-    
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
-    
-    quantization_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=dtype,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4"
-    )
-    
-    model = AutoModel.from_pretrained(
-        model_name,
-        quantization_config=quantization_config,
-        device_map="auto" if device == "cuda" else None,
-        trust_remote_code=True
-    )
-    
-    return model, tokenizer, config
-
-
-
 # =============================================================================
-# MAIN LOADING FUNCTION - CONTROLLED BY ENVIRONMENT VARIABLE
+# Helper: Native Loader (PyTorch Dtype)
 # =============================================================================
-
-def load_model(model_name: str, device: str, dtype: torch.dtype, model_type: str = "base"):
+def load_model_native(model_name: str, device: str, precision: str, model_type: str = "base"):
     """
-    Main model loading function controlled by QUANT_MODE environment variable.
+    Load model natively with a specific torch.dtype.
+    Supports: bf16, fp16, fp32, and fp8 (if supported by torch).
+    """
+    log.info(f"Loading model (NATIVE, precision={precision}): {model_name}")
     
-    Set QUANT_MODE to one of:
-    - "standard" (default): No quantization
-    - "8bit": 8-bit quantization
-    - "4bit_nf4": 4-bit NF4 quantization
-    - "4bit_fp4": 4-bit FP4 quantization  
-    - "4bit_nf4_double": 4-bit NF4 with double quantization
+    # Map precision string to torch dtype
+    if precision == "bf16":
+        torch_dtype = torch.bfloat16
+    elif precision == "fp16":
+        torch_dtype = torch.float16
+    elif precision == "fp32":
+        torch_dtype = torch.float32
+    elif precision == "fp8":
+        if hasattr(torch, "float8_e4m3fn"):
+            torch_dtype = torch.float8_e4m3fn
+            log.info("Using explicit torch.float8_e4m3fn dtype")
+        else:
+            raise ValueError("Requested 'fp8' mode but torch.float8_e4m3fn is NOT available in this PyTorch version.")
+    else:
+        # Fallback
+        torch_dtype = torch.bfloat16
+        
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+    
+    model_class = AutoModelForCausalLM if model_type == "causal" else AutoModel
+    
+    model = model_class.from_pretrained(
+        model_name,
+        torch_dtype=torch_dtype,
+        device_map="auto" if device == "cuda" else None,
+        trust_remote_code=True
+    )
+    
+    return model, tokenizer, config
+
+# =============================================================================
+# Helper: BitsAndBytes Loader
+# =============================================================================
+def load_model_bitsandbytes(model_name: str, device: str, quant_mode: str, compute_dtype: torch.dtype, model_type: str = "base"):
+    """
+    Load model using BitsAndBytes quantization.
+    Supports: 8bit, 4bit_nf4, 4bit_fp4.
+    """
+    log.info(f"Loading model (BitsAndBytes, mode={quant_mode}): {model_name}")
+    
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+    
+    # Build Config
+    if quant_mode == "8bit":
+        bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+    elif quant_mode == "4bit_nf4":
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=compute_dtype,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4"
+        )
+    elif quant_mode == "4bit_fp4":
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=compute_dtype,
+            bnb_4bit_use_double_quant=False,
+            bnb_4bit_quant_type="fp4"
+        )
+    else:
+        log.warning(f"Unknown BnB mode {quant_mode}, defaulting to 8bit")
+        bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+        
+    model_class = AutoModelForCausalLM if model_type == "causal" else AutoModel
+    
+    model = model_class.from_pretrained(
+        model_name,
+        quantization_config=bnb_config,
+        device_map="auto" if device == "cuda" else None,
+        trust_remote_code=True
+    )
+    
+    return model, tokenizer, config
+
+
+# =============================================================================
+# MAIN INTERFACE
+# =============================================================================
+def load_model(model_name: str, device: str, dtype: torch.dtype, model_type: str = "base", loader_type: str = "native"):
+    """
+    Main model loading function.
     
     Args:
-        model_name: HuggingFace model identifier
+        model_name: HF Model ID
         device: "cuda" or "cpu"
-        dtype: torch.dtype (e.g., torch.float16, torch.bfloat16)
-        model_type: "base" (AutoModel) or "causal" (AutoModelForCausalLM)
-    
-    Returns:
-        tuple: (model, tokenizer, config)
+        dtype: Base compute dtype (used for bnb dequantization or native fallback)
+        model_type: "base" or "causal"
+        loader_type: "native" or "bitsandbytes" (Default: native)
+        
+    Env Vars:
+        QUANT_MODE: 
+          - If loader_type="native", expects "bf16", "fp8", etc.
+          - If loader_type="bitsandbytes", expects "8bit", "4bit_nf4", etc.
     """
     
-    quant_mode = os.environ.get("QUANT_MODE", "standard").lower()
+    # Get precision/mode from Env used by benchmark script
+    mode_arg = os.environ.get("QUANT_MODE", "bf16").lower()
     
-    if quant_mode == "8bit":
-        return load_model_8bit(model_name, device, dtype, model_type=model_type)
-    elif quant_mode == "4bit_nf4":
-        return load_model_4bit(model_name, device, dtype)
-    elif quant_mode == "4bit_fp4":
-        return load_model_4bit_fp4(model_name, device, dtype)
-    elif quant_mode == "4bit_nf4_double":
-        return load_model_4bit_nf4_double(model_name, device, dtype)
-    elif quant_mode == "standard":
-        return load_model_standard(model_name, device, dtype, model_type=model_type)
+    if loader_type == "native":
+        # In native mode, QUANT_MODE is treated as the target precision
+        return load_model_native(model_name, device, precision=mode_arg, model_type=model_type)
+        
+    elif loader_type == "bitsandbytes":
+        return load_model_bitsandbytes(model_name, device, quant_mode=mode_arg, compute_dtype=dtype, model_type=model_type)
+        
     else:
-        log.warning(f"Unknown QUANT_MODE '{quant_mode}', falling back to standard loading")
-        return load_model_standard(model_name, device, dtype, model_type=model_type)
+        log.warning(f"Unknown loader type {loader_type}, using Native")
+        return load_model_native(model_name, device, precision=mode_arg, model_type=model_type)
 
 
 def get_model_info(config, model):
@@ -182,7 +146,6 @@ def get_model_info(config, model):
         "n_layer": n_layer,
         "d_ff": d_ff
     }
-
 
 def get_max_length(config, tokenizer):
     """Determine maximum sequence length for the model."""

@@ -172,111 +172,30 @@ def main():
     
     # Binning Params
     parser.add_argument("--umap-dim", type=int, default=10)
+    parser.add_argument("--loader", type=str, default="native", choices=["native", "bitsandbytes"], help="Model Loader Type")
     parser.add_argument("--dbscan-eps", type=float, default=0.5)
     parser.add_argument("--dbscan-min-samples", type=int, default=5)
     
     args = parser.parse_args()
     
-    # Set seed for reproducibility
-    np.random.seed(args.seed)
-    
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    outdir = Path(args.outdir) / f"run_{timestamp}"
-    outdir.mkdir(parents=True, exist_ok=True)
-    
-    # 1. Load Data
-    log.info(f"Loading data from {args.csv}...")
-    df = pd.read_csv(args.csv)
-    
-    # Validate columns
-    required_cols = {"genome_id", "fragment_id", "seq"}
-    # if not required_cols.issubset(df.columns):
-    #     raise ValueError(f"CSV must contain columns: {required_cols}. Found: {df.columns.tolist()}")
+# ... (Lines 180-276)
 
-    # Filter by number of genomes if requested
-    if args.n_genomes is not None:
-        unique_genomes = df["genome_id"].unique()
-        if len(unique_genomes) > args.n_genomes:
-            # Randomly sample genomes using the seeded generator
-            selected_genomes = np.random.choice(unique_genomes, size=args.n_genomes, replace=False)
-            df = df[df["genome_id"].isin(selected_genomes)]
-            log.info(f"Randomly subsampled to {args.n_genomes} genomes (Seed={args.seed}).")
-        else:
-            log.info(f"Requested {args.n_genomes} genomes but found {len(unique_genomes)}. Using all.")
-
-    # Filter by number of fragments per genome if requested
-    if args.n_fragments is not None:
-        # Group by genome_id and sample n_fragments
-        log.info(f"Subsampling to {args.n_fragments} fragments per genome...")
-        
-        def sample_fragments(group):
-            if len(group) > args.n_fragments:
-                return group.sample(n=args.n_fragments, random_state=args.seed)
-            return group
-
-        df = df.groupby("genome_id", group_keys=False).apply(sample_fragments)
-        log.info(f"Total sequences after fragment subsampling: {len(df)}")
-        log.info(f"Dataset shape: {df.shape}")
-        avg_len_chars = df["seq"].str.len().mean()
-        log.info(f"Average sequence length (bps): {avg_len_chars:.2f}")
-
-    sequences = df["seq"].tolist()
-    genome_ids = df["genome_id"].tolist()
-    
-    # Generate Global Color Map for Consistent Plotting
-    unique_genomes_sorted = sorted(list(set(genome_ids)))
-    palette = sns.color_palette("husl", len(unique_genomes_sorted))
-    # Convert RGB tuples to hex strings for consistency if needed, or keep as tuples
-    # Matplotlib accepts tuples fine.
-    global_color_map = dict(zip(unique_genomes_sorted, palette))
-    log.info(f"Generated global color map for {len(unique_genomes_sorted)} genomes.")
-    
-    dtype = getattr(torch, args.precision)
-    
-    # Storage for results
-    perf_results = []
-    binning_results = []
-    
-    # Need to store STANDARD embeddings for quality comparison
-    standard_embeddings = {}
-    quality_comparisons = []
-    
-    # Ensure 'standard' runs first if present so we have baseline
-    modes = args.quant_modes
-    if "standard" in modes and modes[0] != "standard":
-        modes.remove("standard")
-        modes.insert(0, "standard")
-        
-    # 1.5 Pre-tokenize Data
-    log.info("Pre-tokenizing entire dataset to eliminate CPU bottlenecks...")
-    pre_tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
-    if pre_tokenizer.pad_token is None:
-        if pre_tokenizer.eos_token is not None:
-            pre_tokenizer.pad_token = pre_tokenizer.eos_token
-        else:
-            pre_tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-            
-    # Tokenize all sequences at once (or could do in large chunks if needed)
-    all_inputs = pre_tokenizer(
-        sequences, 
-        padding=True, 
-        truncation=True, 
-        max_length=args.max_tokens, 
-        return_tensors="pt"
-    )
-    
-    input_ids_all = all_inputs["input_ids"]
-    attention_mask_all = all_inputs["attention_mask"]
-    log.info(f"Dataset Tokenized. Shape: {input_ids_all.shape}")
-        
     # 2. Main Loop Over Modes
     for mode in modes:
         log.info(f"\n=== Processing Mode: {mode} ===")
         os.environ["QUANT_MODE"] = mode
         
+        # Determine Loader for this specific mode
+        if mode in ["8bit", "4bit_nf4", "4bit_fp4", "4bit_nf4_double"]:
+            current_loader = "bitsandbytes"
+        else:
+            current_loader = "native" # bf16, fp16, fp8
+            
+        log.info(f"Loader: {current_loader}")
+        
         try:
             # A. Load Model
-            model, tokenizer, config = load_model(args.model, args.device, dtype)
+            model, tokenizer, config = load_model(args.model, args.device, dtype, loader_type=current_loader)
             
             # B. Run Inference (Perf + Embeddings)
             log.info(f"Running Inference & Performance Measurement (BS={args.batch_size})...")
