@@ -67,18 +67,28 @@ def load_model_native(model_name: str, device: str, precision: str, model_type: 
     if target_dtype == torch.float8_e4m3fn:
         log.info("Attempting to quantize to FP8 using torchao...")
         try:
+            # Try Modern API (torchao >= 0.4)
             from torchao.quantization import quantize_, float8_weight_only
             log.info("Applying torchao.quantization.float8_weight_only()...")
             quantize_(model, float8_weight_only())
             log.info("Successfully quantized model to Native FP8 (via torchao).")
-        except (ImportError, AttributeError, RuntimeError) as e:
-            error_msg = (
-                f"\n\n[ERROR] Failed to import/run 'torchao' (Error: {e}).\n"
-                "Your installed 'torchao' version might be incompatible with PyTorch version.\n"
-                "Try installing a compatible version: pip install torchao==0.3.1\n"
-            )
-            log.error(error_msg)
-            raise ImportError(error_msg)
+            
+        except (ImportError, AttributeError):
+            try:
+                # Try Legacy/Experimental API (torchao 0.3.x or via submodule)
+                # Some versions expose it via torchao.float8
+                from torchao.float8 import convert_to_float8_training
+                log.info("Applying torchao.float8.convert_to_float8_training()...")
+                convert_to_float8_training(model)
+                log.info("Successfully converted model to FP8 (via torchao.float8).")
+            except (ImportError, AttributeError) as e:
+                error_msg = (
+                    f"\n\n[ERROR] Could not find FP8 quantization method in 'torchao' (Error: {e}).\n"
+                    "Native FP8 is bleeding-edge. Your combination of PyTorch/torchao might not support it yet.\n"
+                    "Recommendation: Use 'bf16' (native) or '8bit' (bitsandbytes) for now.\n"
+                )
+                log.error(error_msg)
+                raise ImportError(error_msg)
         except Exception as e:
             log.error(f"Failed to apply torchao quantization: {e}")
             raise e
