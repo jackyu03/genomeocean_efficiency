@@ -22,33 +22,51 @@ def load_model_native(model_name: str, device: str, precision: str, model_type: 
     log.info(f"Loading model (NATIVE, precision={precision}): {model_name}")
     
     # Map precision string to torch dtype
+    target_dtype = None
+    load_dtype = torch.bfloat16 # Default loading dtype
+    
     if precision == "bf16":
-        torch_dtype = torch.bfloat16
+        load_dtype = torch.bfloat16
+        target_dtype = torch.bfloat16
     elif precision == "fp16":
-        torch_dtype = torch.float16
+        load_dtype = torch.float16
+        target_dtype = torch.float16
     elif precision == "fp32":
-        torch_dtype = torch.float32
+        load_dtype = torch.float32
+        target_dtype = torch.float32
     elif precision == "fp8":
         if hasattr(torch, "float8_e4m3fn"):
-            torch_dtype = torch.float8_e4m3fn
-            log.info("Using explicit torch.float8_e4m3fn dtype")
+            # CURRENT WORKAROUND: Transformers cannot set default dtype to fp8.
+            # We load in BF16, then cast to FP8.
+            # This is not "true" native loading (which would save memory during load),
+            # but it allows running the FP8 kernels.
+            load_dtype = torch.bfloat16
+            target_dtype = torch.float8_e4m3fn
+            log.info("FP8 Native: Loading in BF16 first, then casting to torch.float8_e4m3fn")
         else:
             raise ValueError("Requested 'fp8' mode but torch.float8_e4m3fn is NOT available in this PyTorch version.")
     else:
         # Fallback
-        torch_dtype = torch.bfloat16
+        load_dtype = torch.bfloat16
+        target_dtype = torch.bfloat16
         
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
     
     model_class = AutoModelForCausalLM if model_type == "causal" else AutoModel
     
+    # Load model (using safe load_dtype)
     model = model_class.from_pretrained(
         model_name,
-        torch_dtype=torch_dtype,
+        torch_dtype=load_dtype,
         device_map="auto" if device == "cuda" else None,
         trust_remote_code=True
     )
+    
+    # Post-load cast if needed (e.g. for FP8)
+    if target_dtype == torch.float8_e4m3fn:
+        log.info("Casting model to float8_e4m3fn...")
+        model = model.to(dtype=target_dtype)
     
     return model, tokenizer, config
 
