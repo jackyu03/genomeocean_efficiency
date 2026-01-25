@@ -44,8 +44,40 @@ def main():
     
     args = parser.parse_args()
     
-    # ... (Setup code is unchanged)
-
+    # Setup
+    np.random.seed(args.seed)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    outdir = Path(args.outdir) / f"run_{timestamp}"
+    outdir.mkdir(parents=True, exist_ok=True)
+    
+    # 1. Load & Prepare Data
+    log.info(f"Loading data from {args.csv}...")
+    df = pd.read_csv(args.csv)
+    
+    # Select Genomes
+    unique_genomes = df["genome_id"].unique()
+    if len(unique_genomes) > args.n_genomes:
+        selected_genome_ids = np.random.choice(unique_genomes, size=args.n_genomes, replace=False)
+    else:
+        selected_genome_ids = unique_genomes
+        
+    log.info(f"Selected {len(selected_genome_ids)} genomes for independent evaluation.")
+    
+    # Pre-process: Concatenate fragments per genome to reach target token count
+    genome_data = [] # List of (genome_id, full_sequence_text)
+    
+    log.info("Preparing genome sequences...")
+    for gid in tqdm(selected_genome_ids, desc="Preparing Data"):
+        g_rows = df[df["genome_id"] == gid]["seq"].tolist()
+        
+        full_seq = ""
+        for frag in g_rows:
+            full_seq += frag
+            if len(full_seq) > (args.tokens_per_genome * 6): 
+                break
+        
+        genome_data.append((gid, full_seq))
+        
     # 2. Tokenize & Benchmark Loop
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
     log.info(f"Tokenizer: {type(tokenizer).__name__}")
