@@ -71,11 +71,11 @@ def load_model_native(model_name: str, device: str, precision: str, model_type: 
             log.info("Applying torchao.quantization.float8_weight_only()...")
             quantize_(model, float8_weight_only())
             log.info("Successfully quantized model to Native FP8 (via torchao).")
-        except ImportError:
+        except (ImportError, AttributeError, RuntimeError) as e:
             error_msg = (
-                "\n\n[ERROR] Native FP8 execution requires 'torchao'.\n"
-                "Please install it: pip install torchao\n"
-                "Or stick to 'bf16' (native) or '8bit' (bitsandbytes).\n"
+                f"\n\n[ERROR] Failed to import/run 'torchao' (Error: {e}).\n"
+                "Your installed 'torchao' version might be incompatible with PyTorch version.\n"
+                "Try installing a compatible version: pip install torchao==0.3.1\n"
             )
             log.error(error_msg)
             raise ImportError(error_msg)
