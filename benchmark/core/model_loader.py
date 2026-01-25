@@ -64,31 +64,28 @@ def load_model_native(model_name: str, device: str, precision: str, model_type: 
     )
     
     # Post-load cast if needed (e.g. for FP8)
-    if target_dtype == torch.float8_e4m3fn:
-        log.info("Attempting to quantize to FP8 using torchao...")
         try:
-            # Try Modern API (torchao >= 0.4)
+            import torchao
+            log.info(f"Found torchao version: {torchao.__version__}")
+            
+            # Try Modern API (torchao >= 0.5)
             from torchao.quantization import quantize_, float8_weight_only
             log.info("Applying torchao.quantization.float8_weight_only()...")
             quantize_(model, float8_weight_only())
             log.info("Successfully quantized model to Native FP8 (via torchao).")
             
-        except (ImportError, AttributeError):
-            try:
-                # Try Legacy/Experimental API (torchao 0.3.x or via submodule)
-                # Some versions expose it via torchao.float8
-                from torchao.float8 import convert_to_float8_training
-                log.info("Applying torchao.float8.convert_to_float8_training()...")
-                convert_to_float8_training(model)
-                log.info("Successfully converted model to FP8 (via torchao.float8).")
-            except (ImportError, AttributeError) as e:
-                error_msg = (
-                    f"\n\n[ERROR] Could not find FP8 quantization method in 'torchao' (Error: {e}).\n"
-                    "Native FP8 is bleeding-edge. Your combination of PyTorch/torchao might not support it yet.\n"
-                    "Recommendation: Use 'bf16' (native) or '8bit' (bitsandbytes) for now.\n"
-                )
-                log.error(error_msg)
-                raise ImportError(error_msg)
+        except (ImportError, AttributeError) as e:
+            # Fallback failed or API missing
+            error_msg = (
+                f"\n\n[ERROR] TorchAO FP8 Quantization failed (Error: {e}).\n"
+                f"Installed torchao version: {getattr(torchao, '__version__', 'Unknown')}\n"
+                "Your torchao version does not support the required 'float8_weight_only' API.\n"
+                "Possible Fix:\n"
+                "  pip install --pre torchao --index-url https://download.pytorch.org/whl/nightly/cu121\n"
+                "OR, use standard BF16 by setting --precision bf16 (instead of fp8).\n"
+            )
+            log.error(error_msg)
+            raise ImportError(error_msg)
         except Exception as e:
             log.error(f"Failed to apply torchao quantization: {e}")
             raise e
