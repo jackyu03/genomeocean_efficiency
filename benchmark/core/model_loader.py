@@ -65,25 +65,23 @@ def load_model_native(model_name: str, device: str, precision: str, model_type: 
     
     # Post-load cast if needed (e.g. for FP8)
     if target_dtype == torch.float8_e4m3fn:
-        log.info("Casting Linear layers to float8_e4m3fn (keeping Embeddings/Norms in BF16)...")
-        # We cannot cast the whole model because nn.Embedding doesn't support FP8 indexing.
-        # We also usually keep LayerNorm/RMSNorm in high precision (BF16/FP32).
-        
-        for name, module in model.named_modules():
-            # Cast Linear layers to FP8
-            if isinstance(module, torch.nn.Linear):
-                # Note: Some small heads might be better in BF16, but generally Linear is safe.
-                # EXCEPT: If this Linear is the LM Head (un-embedding), it typically shares weights 
-                # with embedding or needs high precision.
-                # Mistral/Llama usually have separate heads but let's be safe.
-                if "lm_head" in name: 
-                    continue
-                    
-                module.to(dtype=target_dtype)
-            
-            # Cast Conv1D if present (rare in modern LLMs)
-            
-        log.info("Model partially cast to FP8 (Linear layers). Embeddings/Head remain in BF16.")
+        log.info("Attempting to quantize to FP8 using torchao...")
+        try:
+            from torchao.quantization import quantize_, float8_weight_only
+            log.info("Applying torchao.quantization.float8_weight_only()...")
+            quantize_(model, float8_weight_only())
+            log.info("Successfully quantized model to Native FP8 (via torchao).")
+        except ImportError:
+            error_msg = (
+                "\n\n[ERROR] Native FP8 execution requires 'torchao'.\n"
+                "Please install it: pip install torchao\n"
+                "Or stick to 'bf16' (native) or '8bit' (bitsandbytes).\n"
+            )
+            log.error(error_msg)
+            raise ImportError(error_msg)
+        except Exception as e:
+            log.error(f"Failed to apply torchao quantization: {e}")
+            raise e
     
     return model, tokenizer, config
 
