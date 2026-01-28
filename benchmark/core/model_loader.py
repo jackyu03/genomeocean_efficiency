@@ -64,6 +64,7 @@ def load_model_native(model_name: str, device: str, precision: str, model_type: 
     )
     
     # Post-load cast if needed (e.g. for FP8)
+    if precision == "fp8":
         try:
             import torchao
             log.info(f"Found torchao version: {torchao.__version__}")
