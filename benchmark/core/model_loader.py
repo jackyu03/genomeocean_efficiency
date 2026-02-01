@@ -24,6 +24,7 @@ def load_model_native(model_name: str, device: str, precision: str, model_type: 
     # Map precision string to torch dtype
     target_dtype = None
     load_dtype = torch.bfloat16 # Default loading dtype
+    quantization_config = None
     
     if precision == "bf16":
         load_dtype = torch.bfloat16
@@ -35,20 +36,14 @@ def load_model_native(model_name: str, device: str, precision: str, model_type: 
         load_dtype = torch.float32
         target_dtype = torch.float32
     elif precision == "fp8":
-        if hasattr(torch, "float8_e4m3fn"):
-            # CURRENT WORKAROUND: Transformers cannot set default dtype to fp8.
-            # We load in BF16, then cast to FP8.
-            # This is not "true" native loading (which would save memory during load),
-            # but it allows running the FP8 kernels.
-            load_dtype = torch.bfloat16
-            target_dtype = torch.float8_e4m3fn
-            log.info("FP8 Native: Loading in BF16 first, then casting to torch.float8_e4m3fn")
-        else:
-            raise ValueError("Requested 'fp8' mode but torch.float8_e4m3fn is NOT available in this PyTorch version.")
+        try:
+            from transformers import FbgemmFp8Config
+            quantization_config = FbgemmFp8Config(quant_method="fbgemm_fp8")
+            log.info("Loading model with Native Hugging Face FP8 (FbgemmFp8Config)...")
+        except ImportError:
+            raise ImportError("Requested 'fp8' but FbgemmFp8Config is not available in 'transformers'. Please install fbgemm-gpu and update transformers.")
     else:
-        # Fallback
-        load_dtype = torch.bfloat16
-        target_dtype = torch.bfloat16
+        raise ValueError(f"Unknown precision '{precision}'. Must be one of: bf16, fp16, fp32, fp8.")
         
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
@@ -59,37 +54,10 @@ def load_model_native(model_name: str, device: str, precision: str, model_type: 
     model = model_class.from_pretrained(
         model_name,
         torch_dtype=load_dtype,
+        quantization_config=quantization_config,
         device_map="auto" if device == "cuda" else None,
         trust_remote_code=True
     )
-    
-    # Post-load cast if needed (e.g. for FP8)
-    if precision == "fp8":
-        try:
-            import torchao
-            log.info(f"Found torchao version: {torchao.__version__}")
-            
-            # Try Modern API (torchao >= 0.5)
-            from torchao.quantization import quantize_, float8_weight_only
-            log.info("Applying torchao.quantization.float8_weight_only()...")
-            quantize_(model, float8_weight_only())
-            log.info("Successfully quantized model to Native FP8 (via torchao).")
-            
-        except (ImportError, AttributeError) as e:
-            # Fallback failed or API missing
-            error_msg = (
-                f"\n\n[ERROR] TorchAO FP8 Quantization failed (Error: {e}).\n"
-                f"Installed torchao version: {getattr(torchao, '__version__', 'Unknown')}\n"
-                "Your torchao version does not support the required 'float8_weight_only' API.\n"
-                "Possible Fix:\n"
-                "  pip install --pre torchao --index-url https://download.pytorch.org/whl/nightly/cu121\n"
-                "OR, use standard BF16 by setting --precision bf16 (instead of fp8).\n"
-            )
-            log.error(error_msg)
-            raise ImportError(error_msg)
-        except Exception as e:
-            log.error(f"Failed to apply torchao quantization: {e}")
-            raise e
     
     return model, tokenizer, config
 
