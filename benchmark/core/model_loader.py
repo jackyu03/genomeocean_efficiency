@@ -14,6 +14,9 @@ log = logging.getLogger("model_loader")
 # =============================================================================
 # Helper: Native Loader (PyTorch Dtype)
 # =============================================================================
+
+STANDARD_MODE = "bf16"
+
 def load_model_native(model_name: str, device: str, precision: str, model_type: str = "base"):
     """
     Load model natively with a specific torch.dtype.
@@ -26,6 +29,10 @@ def load_model_native(model_name: str, device: str, precision: str, model_type: 
     load_dtype = torch.bfloat16 # Default loading dtype
     quantization_config = None
     
+    # Resolve standard alias
+    if precision == "standard":
+        precision = STANDARD_MODE
+
     if precision == "bf16":
         load_dtype = torch.bfloat16
         target_dtype = torch.bfloat16
@@ -43,7 +50,7 @@ def load_model_native(model_name: str, device: str, precision: str, model_type: 
         except ImportError:
             raise ImportError("Requested 'fp8' but FbgemmFp8Config is not available in 'transformers'. Please install fbgemm-gpu and update transformers.")
     else:
-        raise ValueError(f"Unknown precision '{precision}'. Must be one of: bf16, fp16, fp32, fp8.")
+        raise ValueError(f"Unknown precision '{precision}'. Must be one of: bf16 (alias: standard), fp16, fp32, fp8.")
         
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
@@ -128,8 +135,12 @@ def load_model(model_name: str, device: str, dtype: torch.dtype, model_type: str
     """
     
     # Get precision/mode from Env used by benchmark script
-    mode_arg = os.environ.get("QUANT_MODE", "bf16").lower()
+    mode_arg = os.environ.get("QUANT_MODE", STANDARD_MODE).lower()
     
+    # Alias standard -> STANDARD_MODE
+    if mode_arg == "standard":
+        mode_arg = STANDARD_MODE
+
     if loader_type == "native":
         # In native mode, QUANT_MODE is treated as the target precision
         return load_model_native(model_name, device, precision=mode_arg, model_type=model_type)

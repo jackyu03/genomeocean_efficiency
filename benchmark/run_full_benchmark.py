@@ -27,7 +27,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from quantization_benchmark.quality_eval import evaluate_quantization_quality, extract_layer_outputs, compare_quantization_outputs, save_quality_results
 from binning_benchmark.eval import run_binning_eval
-from core.model_loader import load_model, get_max_length
+from core.model_loader import load_model, get_max_length, STANDARD_MODE
 from core.metrics import EnergyMeter
 from transformers import AutoTokenizer
 import seaborn as sns
@@ -148,7 +148,7 @@ def main():
     parser.add_argument("--model", type=str, required=True, help="HF Model ID")
     parser.add_argument("--device", type=str, default="cuda", help="Device")
     parser.add_argument("--precision", type=str, default="bfloat16", help="Precision")
-    parser.add_argument("--quant-modes", type=str, nargs="+", default=["standard", "8bit", "4bit_nf4"], help="Modes")
+    parser.add_argument("--quant-modes", type=str, nargs="+", default=[STANDARD_MODE, "8bit", "4bit_nf4"], help="Modes")
     parser.add_argument("--outdir", type=str, default="./results_full", help="Base output dir")
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size for inference")
     parser.add_argument("--max-tokens", type=int, default=5000, help="Max length in TOKENS (not base pairs)")
@@ -222,10 +222,21 @@ def main():
     quality_comparisons = []
     
     # Ensure 'standard' runs first if present so we have baseline
-    modes = args.quant_modes
-    if "standard" in modes and modes[0] != "standard":
-        modes.remove("standard")
-        modes.insert(0, "standard")
+    # Ensure STANDARD_MODE runs first if present so we have baseline
+    # Also resolve any 'standard' alias in input args
+    modes = []
+    for m in args.quant_modes:
+        if m == "standard":
+            modes.append(STANDARD_MODE)
+        else:
+            modes.append(m)
+    
+    # Remove duplicates while preserving order
+    modes = list(dict.fromkeys(modes))
+    
+    if STANDARD_MODE in modes and modes[0] != STANDARD_MODE:
+        modes.remove(STANDARD_MODE)
+        modes.insert(0, STANDARD_MODE)
         
     # 1.5 Pre-tokenize Data
     log.info("Pre-tokenizing entire dataset to eliminate CPU bottlenecks...")
@@ -286,11 +297,11 @@ def main():
             torch.cuda.empty_cache()
 
             # C. Quality Eval (Compare to Standard)
-            if mode == "standard":
+            if mode == STANDARD_MODE:
                 standard_embeddings = embeddings
-                log.info("Stored standard embeddings for reference.")
+                log.info(f"Stored {STANDARD_MODE} embeddings for reference.")
             elif standard_embeddings:
-                log.info("Computing Quality Metrics vs Standard...")
+                log.info(f"Computing Quality Metrics vs {STANDARD_MODE}...")
                 # We reuse the logic from quality_eval but adapted for raw numpy arrays
                 
                 # Wrap in dict format expected by helper
@@ -300,7 +311,7 @@ def main():
                 comp = compare_quantization_outputs(std_dict, quant_dict, mode)
                 quality_comparisons.append(comp)
             else:
-                log.warning("Skipping Quality Eval (No 'standard' baseline found yet).")
+                log.warning(f"Skipping Quality Eval (No '{STANDARD_MODE}' baseline found yet).")
             
             # D. Binning Eval
             log.info("Running Binning Evaluation...")
