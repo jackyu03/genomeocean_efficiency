@@ -154,6 +154,7 @@ def main():
     parser.add_argument("--max-tokens", type=int, default=5000, help="Max length in TOKENS (not base pairs)")
     parser.add_argument("--n-genomes", type=int, default=None, help="Number of genomes to use (randomly sampled)")
     parser.add_argument("--n-fragments", type=int, default=None, help="Number of fragments per genome (randomly sampled)")
+    parser.add_argument("--subdivide-fragments", type=int, default=None, help="Length to subdivide long fragments into (bp). Discards remainder.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for sampling")
     
     # Binning Params
@@ -161,7 +162,7 @@ def main():
     parser.add_argument("--loader", type=str, default="native", choices=["native", "bitsandbytes"], help="Model Loader Type")
     parser.add_argument("--dbscan-eps", type=float, default=0.5)
     parser.add_argument("--dbscan-min-samples", type=int, default=5)
-    
+
     args = parser.parse_args()
     
     # Set seed for reproducibility
@@ -174,6 +175,31 @@ def main():
     # 1. Load Data
     log.info(f"Loading data from {args.csv}...")
     df = pd.read_csv(args.csv)
+
+    # 1.1 Optional Subdivision
+    if args.subdivide_fragments is not None:
+        chunk_size = args.subdivide_fragments
+        log.info(f"Subdividing fragments into chunks of {chunk_size} bp (discarding remainder)...")
+        
+        new_rows = []
+        for idx, row in df.iterrows():
+            seq = row['seq']
+            gid = row['genome_id']
+            seq_len = len(seq)
+            
+            # Calculate number of full chunks
+            num_chunks = seq_len // chunk_size
+            
+            for i in range(num_chunks):
+                start = i * chunk_size
+                end = start + chunk_size
+                sub_seq = seq[start:end]
+                new_rows.append({"genome_id": gid, "seq": sub_seq})
+        
+        original_count = len(df)
+        df = pd.DataFrame(new_rows)
+        log.info(f"Subdivision complete. Rows: {original_count} -> {len(df)}")
+
     
     # Filter by number of genomes if requested
     if args.n_genomes is not None:
