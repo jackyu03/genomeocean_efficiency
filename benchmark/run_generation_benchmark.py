@@ -18,6 +18,11 @@ from tqdm import tqdm
 
 from transformers import AutoTokenizer
 
+# Ensure we can import modules
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from core.metrics import EnergyMeter
+from core.model_loader import STANDARD_MODE
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 log = logging.getLogger("gen_bench_vllm")
 
@@ -117,6 +122,63 @@ def compute_metrics_vllm(llm, genome_chunks):
         
     return results
 
+def compute_throughput_vllm(llm, prompt_ids, max_new_tokens, batch_size):
+    """
+    Computes purely raw generation throughput (tokens/sec) and handles Energy logging.
+    prompt_ids: list of tokenized genome prompt prefixes.
+    """
+    from vllm import SamplingParams
+    
+    # Pure generation, NO logprobs overhead to maximize speed
+    sampling_params = SamplingParams(
+        temperature=1.0, 
+        max_tokens=max_new_tokens,
+        ignore_eos=True
+    )
+    
+    prompts_to_run = prompt_ids
+    if len(prompts_to_run) < batch_size:
+        # Replicate to fill batch size to properly stress test the GPU
+        multiplier = math.ceil(batch_size / max(1, len(prompts_to_run)))
+        prompts_to_run = (prompts_to_run * multiplier)[:batch_size]
+    
+    log.info(f"Warming up vLLM generation engine...")
+    _ = llm.generate(prompt_token_ids=[prompts_to_run[0]], sampling_params=sampling_params, use_tqdm=False)
+
+    log.info(f"Running Phase B (Efficiency/Throughput) on {len(prompts_to_run)} parallel sequences...")
+    
+    import time
+    gpu_index = 0
+    start_time = time.perf_counter()
+    
+    with EnergyMeter(gpu_index=gpu_index) as em:
+        _ = llm.generate(prompt_token_ids=prompts_to_run, sampling_params=sampling_params, use_tqdm=True)
+        
+    end_time = time.perf_counter()
+    duration = end_time - start_time
+    
+    total_generated_tokens = len(prompts_to_run) * max_new_tokens
+    tps = total_generated_tokens / duration
+    
+    avg_power = 0.0
+    energy_kwh = 0.0
+    tokens_per_watt = 0.0
+    
+    if em.kwh is not None:
+        energy_kwh = em.kwh
+        avg_power = (energy_kwh * 3_600_000.0) / duration # Joules / sec = Watts
+        if avg_power > 0:
+            tokens_per_watt = tps / avg_power
+            
+    return {
+        "duration_s": round(duration, 3),
+        "total_generated_tokens": total_generated_tokens,
+        "throughput_tps": round(tps, 2),
+        "avg_power_W": round(avg_power, 2),
+        "energy_kWh": round(energy_kwh, 6),
+        "tokens_per_watt": round(tokens_per_watt, 2)
+    }
+
 def main():
     parser = argparse.ArgumentParser(description="GenomeOcean Generation Quality Benchmark (vLLM Accelerated)")
     parser.add_argument("--csv", type=str, required=True, help="Input CSV (genome_id, seq)")
@@ -128,8 +190,10 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--device", type=str, default="cuda", help="Device (currently fixed to cuda for vLLM)")
     parser.add_argument("--precision", type=str, default="bfloat16", help="Precision format")
+    parser.add_argument("--batch-size", type=int, default=128, help="Batch size for concurrent generation")
     parser.add_argument("--context-len", type=int, default=1024, help="Max context length window")
     parser.add_argument("--stride", type=int, default=256, help="Window stride length")
+    parser.add_argument("--gen-len", type=int, default=1024, help="Number of new tokens to generate in Phase B")
 
     args = parser.parse_args()
     
@@ -191,11 +255,12 @@ def main():
     # We find the max chunk length just to set max_model_len
     max_dataset_len = args.context_len
     
-    all_results = []
+    all_quality_results = []
+    all_eff_results = []
     
     modes = args.quant_modes
     # Resolve 'standard' to 'bf16'
-    modes = ["bf16" if m == "standard" else m for m in modes]
+    modes = [STANDARD_MODE if m == "standard" else m for m in modes]
     
     for mode in modes:
         log.info(f"\n=== Evaluating Mode: {mode} ===")
@@ -207,16 +272,14 @@ def main():
             "trust_remote_code": True,
             "dtype": args.precision,
             "tensor_parallel_size": 1,
-            "max_num_seqs": 128, # Safe batch size for smaller chunks
-            "max_model_len": max_dataset_len + 128,
+            "max_num_seqs": args.batch_size, 
+            "max_model_len": max_dataset_len + args.gen_len + 128,
             "enforce_eager": True
         }
         
         if mode == "fp8":
             vllm_kwargs["kv_cache_dtype"] = "fp8"
-            # We don't force 'quantization'='fp8' weight quant unless user explicitly set up fp8 checkpoints.
-            # vLLM provides massive speedup just with FP8 KV cache + BF16 weights.
-            log.info("Mode 'fp8' detected: Assiging fp8 KV Cache to vLLM.")
+            log.info("Mode 'fp8' detected: Assigning fp8 KV Cache to vLLM.")
             
         try:
             llm = LLM(**vllm_kwargs)
@@ -224,12 +287,15 @@ def main():
             log.error(f"Failed to load vLLM engine for mode {mode}: {e}")
             continue
         
-        log.info(f"=== Running Benchmark Extraction ({mode}) ===")
+        log.info(f"=== Phase A: Quality Extraction ({mode}) ===")
+        import torch
+        if args.device == "cuda": torch.cuda.synchronize()
+        base_vram = torch.cuda.memory_allocated() / 1e9 if args.device == "cuda" else 0
         
         results_list = compute_metrics_vllm(llm, genome_chunks_list)
         
         for gid, res in zip(ordered_gids, results_list):
-            all_results.append({
+            all_quality_results.append({
                 "genome_id": gid,
                 "quantization": mode,
                 "model": args.model,
@@ -239,32 +305,64 @@ def main():
                 "total_tokens": res['total_tokens']
             })
             
+        log.info(f"=== Phase B: Pure Throughput & Efficiency ({mode}) ===")
+        # Build prompt prefixes for generation
+        prompt_prefixes = []
+        for ids in all_input_ids:
+            prompt_prefixes.append(ids[:args.context_len])
+            
+        eff_stats = compute_throughput_vllm(llm, prompt_prefixes, args.gen_len, args.batch_size)
+        
+        peak_vram = torch.cuda.max_memory_allocated() / 1e9 if args.device == "cuda" else 0
+        
+        eff_stats["quantization"] = mode
+        eff_stats["model"] = args.model
+        eff_stats["batch_size"] = args.batch_size
+        eff_stats["static_vram_GB"] = round(base_vram, 2)
+        eff_stats["peak_vram_GB"] = round(peak_vram, 2)
+        
+        all_eff_results.append(eff_stats)
+            
         del llm
-        import torch
         torch.cuda.empty_cache()
 
-    if all_results:
-        df_res = pd.DataFrame(all_results)
-        save_path = outdir / "generation_metrics_by_genome.csv"
-        df_res.to_csv(save_path, index=False)
-        log.info(f"Detailed results saved to {save_path}")
+    if all_quality_results:
+        df_qual = pd.DataFrame(all_quality_results)
+        save_path_qual = outdir / "generation_quality_metrics.csv"
+        df_qual.to_csv(save_path_qual, index=False)
+        log.info(f"Detailed quality results saved to {save_path_qual}")
         
-        summary_lines = ["=== Benchmark Summary ===\n"]
+    if all_eff_results:
+        df_eff = pd.DataFrame(all_eff_results)
+        save_path_eff = outdir / "generation_efficiency_metrics.csv"
+        df_eff.to_csv(save_path_eff, index=False)
+        log.info(f"Detailed efficency results saved to {save_path_eff}")
+        
+    if all_quality_results and all_eff_results:
+        summary_lines = ["=== Unified Generation Benchmark Summary ===\n"]
         
         for mode in modes:
-            subset = df_res[df_res["quantization"] == mode]
-            if len(subset) == 0: continue
+            subset_q = df_qual[df_qual["quantization"] == mode]
+            subset_e = df_eff[df_eff["quantization"] == mode]
+            if len(subset_q) == 0: continue
             
-            mean_ppl = subset["perplexity"].mean()
-            std_ppl = subset["perplexity"].std()
+            mean_ppl = subset_q["perplexity"].mean()
+            std_ppl = subset_q["perplexity"].std()
             
-            mean_nll = subset["neg_log_likelihood"].mean()
-            std_nll = subset["neg_log_likelihood"].std()
+            mean_nll = subset_q["neg_log_likelihood"].mean()
+            std_nll = subset_q["neg_log_likelihood"].std()
             
-            line = (f"Mode: {mode}\n"
+            eff_row = subset_e.iloc[0] if not subset_e.empty else {}
+            
+            line = (f"\nMode: {mode}\n"
+                    f"  [Quality - N={len(subset_q)} genomes]\n"
                     f"  Perplexity: {mean_ppl:.4f} ± {std_ppl:.4f}\n"
                     f"  NLL:        {mean_nll:.4f} ± {std_nll:.4f}\n"
-                    f"  (N={len(subset)} genomes)\n")
+                    f"  [Efficiency - Batch: {args.batch_size}]\n"
+                    f"  Throughput: {eff_row.get('throughput_tps', 0)} tokens/sec\n"
+                    f"  Power:      {eff_row.get('avg_power_W', 0)} W\n"
+                    f"  Efficiency: {eff_row.get('tokens_per_watt', 0)} tokens/watt\n"
+                    f"  VRAM Peak:  {eff_row.get('peak_vram_GB', 0)} GB\n")
             summary_lines.append(line)
             print(line)
                 
