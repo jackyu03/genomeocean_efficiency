@@ -63,7 +63,6 @@ def load_model_native(model_name: str, device: str, precision: str, model_type: 
         torch_dtype=load_dtype,
         quantization_config=quantization_config,
         device_map="auto" if device == "cuda" else None,
-        attn_implementation="flash_attention_2",
         trust_remote_code=True
     )
     
@@ -109,7 +108,6 @@ def load_model_bitsandbytes(model_name: str, device: str, quant_mode: str, compu
         model_name,
         quantization_config=bnb_config,
         device_map="auto" if device == "cuda" else None,
-        attn_implementation="flash_attention_2",
         trust_remote_code=True
     )
     
