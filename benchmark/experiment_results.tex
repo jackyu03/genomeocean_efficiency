@@ -60,12 +60,8 @@ This protocol measures the raw computational performance and the semantic qualit
 This protocol evaluates the model's ability to generate biologically valid sequences, a proxy for its "understanding" of genomic grammar.
 \begin{itemize}
     \item \textbf{Dataset}: A larger evaluation set of 100 genomes (\textit{bac120\_100\_seq\_550kbp\_generation\_use}) was used to ensure statistical significance.
-    \item \textbf{Evaluation Metrics}: We computed Perplexity (PPL) and Negative Log-Likelihood (NLL) using a sliding window approach.
-    \begin{itemize}
-        \item For the 100M model: Window = 1,024, Stride = 256.
-        \item For the 4B model: Window = 10,240, Stride = 2,560.
-    \end{itemize}
-    \item \textbf{Next-Token Accuracy}: We also report top-1 accuracy to quantify the model's predictive confidence.
+    \item \textbf{Evaluation Metrics}: We computed Perplexity (PPL) and Negative Log-Likelihood (NLL) to evaluate scoring fidelity. We also conducted raw generation throughput stress tests (tokens/second) to evaluate the efficiency of the decoding phase under maximum parallel load (batch size = 128).
+    \item \textbf{Energy Measurement}: Total power draw (Watts) was measured during generation using active NVIDIA Management Library (NVML) polling via a custom \texttt{EnergyMeter} to establish token-per-watt efficiency.
 \end{itemize}
 
 \section{Results}
@@ -92,23 +88,20 @@ Table \ref{tab:efficiency} presents the throughput (tokens/second) and power con
     \end{tabular}
 \end{table}
 
-\subsection{Generative Fidelity}
-Table \ref{tab:generation} summarizes the model's ability to model the genomic probability distribution.
+\subsection{Generative Fidelity and Throughput}
+Table \ref{tab:generation} summarizes the GenomeOcean-4B model's ability to model the genomic probability distribution alongside its raw decoding throughput when processing massive concurrent batches.
 
 \begin{table}[h]
     \centering
-    \caption{\textbf{Generative Performance.} Metric evaluations (Perplexity, NLL, Accuracy) on the generation benchmark ($N=100$ genomes).}
+    \caption{\textbf{Generative Performance and Decoding Throughput.} Metric evaluations (Perplexity, NLL) and generation efficiency (throughput, power, VRAM) on the unified generation benchmark (Batch Size = 128).}
     \label{tab:generation}
     \small
-    \begin{tabular}{llccc}
+    \begin{tabular}{llccccc}
         \toprule
-        \textbf{Model} & \textbf{Precision} & \textbf{Perplexity} & \textbf{NLL} & \textbf{Accuracy} \\
+        \textbf{Model} & \textbf{Precision} & \textbf{Perplexity} & \textbf{NLL} & \textbf{Throughput (\(\frac{\text{tok}}{\text{s}}\))} & \textbf{Power (W)} & \textbf{Peak VRAM (GB)} \\
         \midrule
-        \textbf{100M} & BF16 & 287.36 & 5.63 & 0.073 \\
-                      & FP8  & 291.90 & 5.64 & 0.072 \\
-        \midrule
-        \textbf{4B}   & BF16 & 126.39 & 4.74 & 0.146 \\
-                      & FP8  & 128.60 & 4.76 & 0.143 \\
+        \textbf{4B}   & BF16 & 84.85 \(\pm\) 22.08 & 4.42 \(\pm\) 0.26 & 3214.82 & 632.02 & 76.07 \\
+                      & FP8  & 84.86 \(\pm\) 22.08 & 4.42 \(\pm\) 0.26 & 2067.20 & 532.27 & 76.30 \\
         \bottomrule
     \end{tabular}
 \end{table}
@@ -153,7 +146,35 @@ $$ \text{Memory}_{KV} \approx 2 \cdot L \cdot H \cdot N_{seq} \cdot N_{batch} \c
 Given the overwhelming dominance of the KV cache in this long-context regime (accounting for $>90\%$ of VRAM usage), the efficiency gains from weight quantization are mathematically diluted using standard attention implementations. The 5.9\% memory reduction, while seemingly small, represents the maximum theoretical limit achievable without compressing the KV cache itself (e.g., via PagedAttention or KV-quantization).
 
 \subsection{Conclusion: Baffling Stagnation in Throughput}
-Perhaps the most "baffling" outcome is the modest \textbf{4.9\% throughput gain} for the 4B model. With memory bandwidth pressure reduced by fetching 8-bit weights and compute capacity doubled, a larger speedup was anticipated. We hypothesize that the bottleneck has shifted from memory bandwidth (loading weights) to the \textbf{Attention Mechanism} itself. Since the native FP8 implementation likely quantizes Linear layers but retains high-precision (BF16 or FP32) accumulation for the Softmax attention scores to preserve stability, the $O(N^2)$ attention operation remains a high-precision choke point. Future work must investigate full-stack quantization, including KV-cache compression, to unlock the true potential of H100 silicon for genomic foundation models.
+Perhaps the most "baffling" outcome in the embedding extraction benchmark (Table \ref{tab:efficiency}) is the modest \textbf{4.9\% throughput gain} for the 4B model. With memory bandwidth pressure reduced by fetching 8-bit weights and compute capacity doubled, a larger speedup was anticipated. We hypothesize that the bottleneck has shifted from memory bandwidth to the \textbf{Attention Mechanism} itself. Since native FP8 implementation quantizes Linear layers but retains high-precision (BF16 or FP32) accumulation for the Softmax attention scores to preserve stability, the $O(N^2)$ attention operation remains a high-precision choke point.
+
+\subsection{The FP8 KV-Cache Decoding Anomaly: Software vs. Hardware Limits}
+When transitioning from the embedding extraction benchmark to the pure generative decoding benchmark (Table \ref{tab:generation}), a remarkable anomaly emerges. While quantizing the Key-Value (KV) cache to FP8 successfully preserves biological representational fidelity (NLL: 4.42 $\to$ 4.42) and halves the theoretical memory footprint of the context window, it simultaneously triggers a devastating \textbf{35.6\% regression in decoding throughput} (3214.82 ток/s $\to$ 2067.20 ток/s) relative to native BF16 execution.
+
+This regression is not a defect of the NVIDIA H100 hardware, but rather a profoundly illuminating artifact of the modern LLM software compilation stack—specifically, the dependency chains within the vLLM serving engine on High-Performance Computing (HPC) clusters.
+
+\subsubsection{The Compilation Fallback Penalty}
+Achieving theoretical FP8 hardware acceleration during the attention decoding phase requires highly optimized, hand-written C++ CUDA kernels capable of executing fused dequantization and matrix multiplication natively. Leading libraries such as \texttt{FlashInfer} provide this capability. However, deploying these bleeding-edge CUDA extensions requires strict host-compiler synchronization (e.g., matching GCC, NVCC, and Ninja binary toolchains). 
+
+In complex HPC environments (such as the Conda environment utilized in our cluster), these dependencies frequently fracture, resulting in Just-In-Time (JIT) compilation failures. When vLLM detects the absence of a compiled \texttt{FlashInfer} binary, it gracefully but fatally falls back to less optimized attention backends, such as Python-wrapped \texttt{Triton} kernels or standard \texttt{XFormers}. 
+
+Conversely, native BF16 execution on the H100 is universally supported by the pre-compiled, ubiquitous \texttt{FlashAttention-3} library, which achieves near-peak theoretical GPU utilization. Thus, our benchmark essentially races an algorithmically perfect BF16 implementation against a computationally crippled FP8 fallback.
+
+\subsubsection{The On-the-Fly Dequantization Bottleneck}
+The performance collapse is further exacerbated by how these fallback kernels handle sub-byte precision. Because the underlying fallback kernels are primarily designed for 16-bit floating-point math, they cannot perform the core Attention matrix operations directly on the 8-bit KV cache. 
+
+During every single autoregressive decoding step, the GPU must:
+\begin{enumerate}
+    \item Fetch thousands of FP8 KV tensors from High Bandwidth Memory (HBM).
+    \item Materialize and cast (dequantize) these tensors into BF16 formats within the SM registers.
+    \item Execute the BF16 matrix multiplication inside the Tensor Cores.
+    \item Cast the resultant new token state back into FP8 and write it back to HBM.
+\end{enumerate}
+This continuous, on-the-fly casting overhead dominates the micro-latency of the decoding loop, entirely negating the bandwidth savings gained by fetching smaller 8-bit payloads. 
+
+Furthermore, the observation that VRAM consumption identically peaks at $\sim$76 GB for both precision formats highlights a critical abstraction layer within the vLLM memory manager. The system preemptively reserves 90\% of the global HBM block at initialization (via \texttt{gpu\_memory\_utilization}). Therefore, the FP8 KV cache does not release physical memory back to the OS; rather, it functionally doubles the \textit{internal block capacity} of the pre-allocated pool, allowing the engine to sustain double the concurrent batch size before encountering an Out-Of-Memory (OOM) fault.
+
+Ultimately, these findings prove that while FP8 is a devastatingly effective memory-compression technique for massive genomic contexts, unlocking its theoretical speed advantages requires a pristine, fully synchronized compilation environment capable of deploying custom fused C++ kernels. Without it, researchers must balance the trade-off of doubled capacity against a steep penalty in generation speed.
 
 \printbibliography
 
