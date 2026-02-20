@@ -5,10 +5,15 @@ import os
 from vllm import LLM, SamplingParams
 
 def run_benchmark(model_name: str, seq_len: int, batch_size: int, use_fp8_kv: bool, use_fp8_weights: bool):
-    # Proactively set the Attention Backend to FlashInfer to ensure that the attention 
-    # mechanism natively computes under FP8 instead of falling back to xFormers/BF16.
+    # Proactively set the Attention Backend. 
+    # FlashInfer natively computes under FP8 but ONLY supports head_dim in [64, 128, 256].
+    # GenomeOcean-100M has head_dim=96 (unsupported), while GenomeOcean-4B has head_dim=128 (supported).
     if use_fp8_kv or use_fp8_weights:
-        os.environ["VLLM_ATTENTION_BACKEND"] = "FLASHINFER"
+        if "4B" in model_name:
+            os.environ["VLLM_ATTENTION_BACKEND"] = "FLASHINFER"
+        else:
+            # Fallback to XFORMERS for models with non-standard head_dim like 100M
+            os.environ["VLLM_ATTENTION_BACKEND"] = "XFORMERS"
 
     print(f"--- vLLM Benchmark | Model: {model_name} ---")
     print(f"Seq Len: {seq_len} | Batch: {batch_size}")

@@ -133,10 +133,15 @@ def main():
 
     args = parser.parse_args()
     
-    # Proactively set the Attention Backend to FlashInfer to ensure that the attention 
-    # mechanism natively computes under FP8 instead of falling back to xFormers/BF16.
+    # Proactively set the Attention Backend. 
+    # FlashInfer natively computes under FP8 but ONLY supports head_dim in [64, 128, 256].
+    # GenomeOcean-100M has head_dim=96 (unsupported), while GenomeOcean-4B has head_dim=128 (supported).
     if "fp8" in args.quant_modes:
-        os.environ["VLLM_ATTENTION_BACKEND"] = "FLASHINFER"
+        if "4B" in args.model:
+            os.environ["VLLM_ATTENTION_BACKEND"] = "FLASHINFER"
+        else:
+            # Fallback to XFORMERS for 100M model or others with non-standard head_dim
+            os.environ["VLLM_ATTENTION_BACKEND"] = "XFORMERS"
     
     np.random.seed(args.seed)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
