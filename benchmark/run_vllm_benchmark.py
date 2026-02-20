@@ -1,9 +1,15 @@
 import argparse
 import time
 import numpy as np
+import os
 from vllm import LLM, SamplingParams
 
 def run_benchmark(model_name: str, seq_len: int, batch_size: int, use_fp8_kv: bool, use_fp8_weights: bool):
+    # Proactively set the Attention Backend to FlashInfer to ensure that the attention 
+    # mechanism natively computes under FP8 instead of falling back to xFormers/BF16.
+    if use_fp8_kv or use_fp8_weights:
+        os.environ["VLLM_ATTENTION_BACKEND"] = "FLASHINFER"
+
     print(f"--- vLLM Benchmark | Model: {model_name} ---")
     print(f"Seq Len: {seq_len} | Batch: {batch_size}")
     print(f"FP8 KV Cache: {use_fp8_kv} | FP8 Weights: {use_fp8_weights}")

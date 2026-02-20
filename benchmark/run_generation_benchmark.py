@@ -133,6 +133,11 @@ def main():
 
     args = parser.parse_args()
     
+    # Proactively set the Attention Backend to FlashInfer to ensure that the attention 
+    # mechanism natively computes under FP8 instead of falling back to xFormers/BF16.
+    if "fp8" in args.quant_modes:
+        os.environ["VLLM_ATTENTION_BACKEND"] = "FLASHINFER"
+    
     np.random.seed(args.seed)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     outdir = Path(args.outdir) / f"run_vllm_{timestamp}"
