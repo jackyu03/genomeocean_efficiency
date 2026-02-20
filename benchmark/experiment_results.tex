@@ -1,0 +1,160 @@
+\documentclass[12pt]{article}
+\usepackage{openwork}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{siunitx}
+\usepackage{hyperref}
+
+\title{GenomeOcean: Efficiency and Representational Fidelity of Genomic Foundation Models on H100 Accelerators}
+\author[1]{First Author}
+\author[2]{Second Author}
+\affil[1]{Department of Genomics, University Name}
+\affil[2]{Department of Computer Science, University Name}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+As genomic foundation models scale towards billions of parameters, the computational cost of inference becomes a critical bottleneck for high-throughput biological discovery. This study systematically evaluates the performance trade-offs of the GenomeOcean architecture (100M and 4B parameters) on next-generation NVIDIA H100 hardware. By leveraging native hardware support for FP8 precision alongside standard BFloat16, we quantify the impact of quantization on three dimensions: computational efficiency (throughput and power), biological syntax generation (perplexity), and downstream utility (species binning). Our results demonstrate that while FP8 quantization offers substantial efficiency gains, its impact on representational fidelity varies significantly with model scale, necessitating a careful selection of precision for deployment in resource-constrained environments.
+\end{abstract}
+
+\section{Introduction}
+Genomic Language Models (gLMs) have demonstrated remarkable capabilities in learning the syntax and semantics of biological sequences. However, deploying these models at scale poses significant challenges due to their memory footprint and computational latency. The recent advent of hardware-accelerated low-precision inference, notably FP8 support on NVIDIA H100 GPUs, presents an opportunity to mitigate these costs. This work provides a rigorous benchmark of the GenomeOcean family of models, assessing whether reduced-precision inference can maintain the fidelity required for sensitive biological tasks such as metagenomic binning and sequence generation.
+
+\section{Methods and Experimental Setup}
+
+\subsection{Hardware Configuration}
+All experiments were conducted on a single NVIDIA H100 SXM5 GPU (80GB VRAM). We utilized the device's native Transformer Engine to support mixed-precision inference. Two quantization modes were evaluated:
+\begin{enumerate}
+    \item \textbf{BFloat16 (BF16)}: The standard training precision, serving as the high-fidelity baseline.
+    \item \textbf{FP8 (E4M3)}: A prominent 8-bit floating-point format designed for deep learning inference, offering a theoretical 2x throughput improvement over BF16.
+\end{enumerate}
+
+\subsection{Model Architectures}
+We evaluated two distinct scales of the GenomeOcean architecture to understand how parameter count influences quantization resilience:
+\begin{itemize}
+    \item \textbf{GenomeOcean-100M}: A lightweight model optimized for rapid inference, with a maximum context window of 1,024 tokens.
+    \item \textbf{GenomeOcean-4B}: A large-scale foundation model designed for capturing long-range genomic dependencies, supporting a context window of 10,240 tokens.
+\end{itemize}
+
+\subsection{Benchmarking Protocols}
+We established two rigorous benchmarks to evaluate efficiency and quality independently.
+
+\subsubsection{Protocol A: Efficiency and Embedding Utility}
+This protocol measures the raw computational performance and the semantic quality of the model's internal representations.
+\begin{itemize}
+    \item \textbf{Dataset}: We curated a dataset (\textit{bac120\_50\_seq\_50k\_nonoverlap}) consisting of 20 randomly selected genomes from the GTDB Bacteria database. To ensure robust statistics, we processed approximately $1 \times 10^6$ tokens per genome.
+    \item \textbf{Fragmentation Strategy}: To accommodate the disparate context windows while maintaining comparable data coverage, we adopted model-specific fragmentation strategies:
+    \begin{itemize}
+        \item \textit{GenomeOcean-100M}: Large genomic fragments were subdivided into non-overlapping 5,000bp chunks. The model processed these as 1,024-token sequences. With $N=1000$ fragments, this approach yielded an effective data utilization of $\sim96\%$.
+        \item \textit{GenomeOcean-4B}: The model processed unmodified fragments using its full 10,240-token context window. With $N=100$ fragments, this resulted in nearly $100\%$ data utilization.
+    \end{itemize}
+    \item \textbf{Downstream Task (Species Binning)}: To quantify semantic utility, we extracted the last-layer embeddings and applied DBSCAN clustering ($\epsilon=0.5$, min\_samples=5). Performance was evaluated using the Adjusted Rand Index (ARI), which measures the agreement between the model-induced clusters and ground-truth taxonomic labels.
+\end{itemize}
+
+\subsubsection{Protocol B: Causal Generation and Compliance}
+This protocol evaluates the model's ability to generate biologically valid sequences, a proxy for its "understanding" of genomic grammar.
+\begin{itemize}
+    \item \textbf{Dataset}: A larger evaluation set of 100 genomes (\textit{bac120\_100\_seq\_550kbp\_generation\_use}) was used to ensure statistical significance.
+    \item \textbf{Evaluation Metrics}: We computed Perplexity (PPL) and Negative Log-Likelihood (NLL) using a sliding window approach.
+    \begin{itemize}
+        \item For the 100M model: Window = 1,024, Stride = 256.
+        \item For the 4B model: Window = 10,240, Stride = 2,560.
+    \end{itemize}
+    \item \textbf{Next-Token Accuracy}: We also report top-1 accuracy to quantify the model's predictive confidence.
+\end{itemize}
+
+\section{Results}
+
+\subsection{Computational Efficiency}
+Table \ref{tab:efficiency} presents the throughput (tokens/second) and power consumption (Watts).
+
+\begin{table}[h]
+    \centering
+    \caption{\textbf{Computational Efficiency on H100.} Comparison of throughput, power consumption, and memory usage across precision modes.}
+    \label{tab:efficiency}
+    \small
+    \begin{tabular}{llcccc}
+        \toprule
+        \textbf{Model} & \textbf{Precision} & \textbf{Throughput} & \textbf{Power} & \textbf{Memory} & \textbf{Efficiency} \\
+        & & (tok/s) & (W) & (GB) & (tok/W) \\
+        \midrule
+        \textbf{100M} & BF16 & 620,142 & 621.6 & 21.15 & 997.6 \\
+                      & FP8  & 459,312 & 539.0 & 21.03 & 852.1 \\
+        \midrule
+        \textbf{4B}   & BF16 & 21,401 & 698.5 & 72.14 & 30.6 \\
+                      & FP8  & 22,453 & 691.8 & 67.91 & 32.5 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{Generative Fidelity}
+Table \ref{tab:generation} summarizes the model's ability to model the genomic probability distribution.
+
+\begin{table}[h]
+    \centering
+    \caption{\textbf{Generative Performance.} Metric evaluations (Perplexity, NLL, Accuracy) on the generation benchmark ($N=100$ genomes).}
+    \label{tab:generation}
+    \small
+    \begin{tabular}{llccc}
+        \toprule
+        \textbf{Model} & \textbf{Precision} & \textbf{Perplexity} & \textbf{NLL} & \textbf{Accuracy} \\
+        \midrule
+        \textbf{100M} & BF16 & 287.36 & 5.63 & 0.073 \\
+                      & FP8  & 291.90 & 5.64 & 0.072 \\
+        \midrule
+        \textbf{4B}   & BF16 & 126.39 & 4.74 & 0.146 \\
+                      & FP8  & 128.60 & 4.76 & 0.143 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{Downstream Utility}
+Table \ref{tab:binning} illustrates the quality of embeddings for taxonomic classification.
+
+\begin{table}[h]
+    \centering
+    \caption{\textbf{Species Binning Utility.} Clustering performance measured by Adjusted Rand Index (ARI).}
+    \label{tab:binning}
+    \small
+    \begin{tabular}{llc}
+        \toprule
+        \textbf{Model} & \textbf{Precision} & \textbf{ARI} \\
+        \midrule
+        \textbf{100M} & BF16 & 0.330 \\
+                      & FP8  & 0.334 \\
+        \midrule
+        \textbf{4B}   & BF16 & 0.490 \\
+                      & FP8  & 0.491 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\section{Discussion}
+The experimental results present a nuanced narrative regarding the efficacy of low-precision inference on the NVIDIA H100 platform. While the shift from BFloat16 to FP8 is often touted as a universal accelerant, our data indicates that the realized gains are strongly contingent on model scale and workload characteristics (context length).
+
+\subsection{The "Small Model Trap": Kernel Overhead vs. Arithmetic Density}
+The most striking, and indeed confounding, result is the \textbf{26\% throughput regression} observed in the GenomeOcean-100M model under FP8 quantization. Theoretically, the H100's fourth-generation Tensor Cores offer a $2\times$ peak FLOPs advantage for FP8 over BF16. However, this theoretical ceiling is only approachable under high arithmetic intensity (compute-bound) regimes with sufficiently large matrix dimensions to saturate the GPU's massive 80GB/s SM throughput.
+
+We hypothesize that for the 100M parameter model, the execution is latency-bound rather than throughput-bound. The overhead of quantization-specific operations---dynamic scaling of activation tensors, casting, and the launch latency of specialized FP8 kernels---likely eclipses the reduction in execution time for the matrix multiplications (GEMMs) themselves. Since the dot-products in a 100M model are relatively small, the "setup cost" of FP8 becomes a dominant factor, leading to the observed deceleration. This effectively creates a "Small Model Trap" where next-generation scaling techniques yield negative returns.
+
+\subsection{Memory Analysis: The Dominance of KV Cache}
+For the GenomeOcean-4B model, we clearly observe the "Weight-Quantization Ceiling."
+\begin{enumerate}
+    \item \textbf{Theoretical Expectations}: The 4B model contains approximately $4 \times 10^9$ parameters. Converting these weights from BF16 (2 bytes) to FP8 (1 byte) should yield a static memory saving of exactly 4 GB ($8 \text{GB} \to 4 \text{GB}$).
+    \item \textbf{Empirical Observation}: Our results show a VRAM reduction from 72.14 GB to 67.91 GB, a difference of \textbf{4.23 GB}.
+\end{enumerate}
+This near-perfect alignment confirms that the memory savings are strictly limited to weight tensors. The remaining $\sim$68 GB of utilization is dominated by the \textbf{Key-Value (KV) Cache}, necessitated by the long-context benchmarking protocol (16 batch size $\times$ 10,240 tokens).
+$$ \text{Memory}_{KV} \approx 2 \cdot L \cdot H \cdot N_{seq} \cdot N_{batch} \cdot \text{Size}_{dtype} $$
+Given the overwhelming dominance of the KV cache in this long-context regime (accounting for $>90\%$ of VRAM usage), the efficiency gains from weight quantization are mathematically diluted using standard attention implementations. The 5.9\% memory reduction, while seemingly small, represents the maximum theoretical limit achievable without compressing the KV cache itself (e.g., via PagedAttention or KV-quantization).
+
+\subsection{Conclusion: Baffling Stagnation in Throughput}
+Perhaps the most "baffling" outcome is the modest \textbf{4.9\% throughput gain} for the 4B model. With memory bandwidth pressure reduced by fetching 8-bit weights and compute capacity doubled, a larger speedup was anticipated. We hypothesize that the bottleneck has shifted from memory bandwidth (loading weights) to the \textbf{Attention Mechanism} itself. Since the native FP8 implementation likely quantizes Linear layers but retains high-precision (BF16 or FP32) accumulation for the Softmax attention scores to preserve stability, the $O(N^2)$ attention operation remains a high-precision choke point. Future work must investigate full-stack quantization, including KV-cache compression, to unlock the true potential of H100 silicon for genomic foundation models.
+
+\printbibliography
+
+\end{document}
