@@ -49,7 +49,8 @@ def compute_metrics_vllm(llm, genome_chunks):
     sampling_params = SamplingParams(
         temperature=0.0,
         max_tokens=1, 
-        prompt_logprobs=1
+        prompt_logprobs=1,
+        ignore_eos=True
     )
     
     # Flatten chunks
