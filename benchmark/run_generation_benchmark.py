@@ -68,6 +68,7 @@ def compute_metrics_vllm(llm, genome_chunks):
     outputs = llm.generate(prompt_token_ids=all_chunks, sampling_params=sampling_params, use_tqdm=True)
     
     genome_nll = {i: 0.0 for i in range(len(genome_chunks))}
+    genome_acc = {i: 0 for i in range(len(genome_chunks))}
     genome_tokens = {i: 0 for i in range(len(genome_chunks))}
     
     for output, meta in zip(outputs, chunk_meta):
@@ -80,26 +81,36 @@ def compute_metrics_vllm(llm, genome_chunks):
             target_logprobs = prompt_logprobs[-trg_len:]
             
             for token_id, logprob_dict in zip(target_tokens, target_logprobs):
-                if logprob_dict is None:
+                if logprob_dict is None or len(logprob_dict) == 0:
                     continue
                     
+                # Perplexity / NLL tracking
                 target_logprob = logprob_dict.get(token_id, None)
                 if target_logprob is not None:
                     genome_nll[gen_idx] += -target_logprob.logprob
-                    genome_tokens[gen_idx] += 1
+                
+                # Accuracy tracking: The top-1 predicted token has the highest logprob in the dict.
+                # vLLM's prompt_logprobs=1 inherently includes the top-1 prediction alongside the prompt token.
+                highest_prob_token = max(logprob_dict.items(), key=lambda x: x[1].logprob)[0]
+                if highest_prob_token == token_id:
+                    genome_acc[gen_idx] += 1
+                    
+                genome_tokens[gen_idx] += 1
                     
     results = []
     
     for gen_idx in range(len(genome_chunks)):
         total_tokens = genome_tokens[gen_idx]
         nll_sum = genome_nll[gen_idx]
+        acc_sum = genome_acc[gen_idx]
         
         avg_nll = nll_sum / total_tokens if total_tokens > 0 else 0.0
+        accuracy = acc_sum / total_tokens if total_tokens > 0 else 0.0
         
         results.append({
             'perplexity': math.exp(avg_nll) if avg_nll < 50 else float('inf'),
             'neg_log_likelihood': avg_nll,
-            'accuracy': 0.0, 
+            'accuracy': accuracy, 
             'total_tokens': total_tokens
         })
         
