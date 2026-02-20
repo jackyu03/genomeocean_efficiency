@@ -3,8 +3,7 @@ import time
 import numpy as np
 import os
 from vllm import LLM, SamplingParams
-
-def run_benchmark(model_name: str, seq_len: int, batch_size: int, use_fp8_kv: bool, use_fp8_weights: bool):
+def run_benchmark(model_name: str, seq_len: int, batch_size: int, gen_len: int, use_fp8_kv: bool, use_fp8_weights: bool):
     # We allow vLLM to automatically select the best attention backend (FA3 or XFormers)
 
     print(f"--- vLLM Benchmark | Model: {model_name} ---")
@@ -20,7 +19,7 @@ def run_benchmark(model_name: str, seq_len: int, batch_size: int, use_fp8_kv: bo
         "tensor_parallel_size": 1,
         "gpu_memory_utilization": 0.90,
         "max_num_seqs": batch_size,
-        "max_model_len": seq_len + 128,  # allow space for generation
+        "max_model_len": seq_len + gen_len + 32,  # allow space for generation
         "enforce_eager": True # Fixes CUDA graph broadcast error with XFormers backend > 8192 tokens
     }
     
@@ -46,8 +45,7 @@ def run_benchmark(model_name: str, seq_len: int, batch_size: int, use_fp8_kv: bo
     except:
         pass
         
-    # Generate 128 tokens
-    gen_len = 128
+    # Generate gen_len tokens
     dummy_prompts = [np.random.randint(0, vocab_size, seq_len).tolist() for _ in range(batch_size)]
     
     sampling_params = SamplingParams(
@@ -78,8 +76,9 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, default="DOEJGI/GenomeOcean-4B")
     parser.add_argument("--seq-len", type=int, default=10240)
     parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--gen-len", type=int, default=1024, help="Number of tokens to generate")
     parser.add_argument("--fp8-kv", action="store_true", help="Enable FP8 KV Cache (solves Attention scaling)")
     parser.add_argument("--fp8-weight", action="store_true", help="Enable FP8 Weights (requires FP8 checkpoint)")
     args = parser.parse_args()
     
-    run_benchmark(args.model, args.seq_len, args.batch_size, args.fp8_kv, args.fp8_weight)
+    run_benchmark(args.model, args.seq_len, args.batch_size, args.gen_len, args.fp8_kv, args.fp8_weight)
