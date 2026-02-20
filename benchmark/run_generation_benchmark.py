@@ -133,10 +133,8 @@ def main():
 
     args = parser.parse_args()
     
-    # We will let vLLM use its default backend (FlashAttention) which is much more 
-    # stable on HPC environments and avoids Conda JIT compilation issues.
-    if "fp8" in args.quant_modes:
-        os.environ["VLLM_ATTENTION_BACKEND"] = "FLASH_ATTN"
+    # We allow vLLM to automatically select the best attention backend (FA3 or XFormers)
+    # based on the hardware and the specific FP8/head_dim constraints.
     
     np.random.seed(args.seed)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

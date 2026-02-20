@@ -5,10 +5,7 @@ import os
 from vllm import LLM, SamplingParams
 
 def run_benchmark(model_name: str, seq_len: int, batch_size: int, use_fp8_kv: bool, use_fp8_weights: bool):
-    # We will let vLLM use its default backend (FlashAttention) which is much more 
-    # stable on HPC environments and avoids Conda JIT compilation issues.
-    if use_fp8_kv or use_fp8_weights:
-        os.environ["VLLM_ATTENTION_BACKEND"] = "FLASH_ATTN"
+    # We allow vLLM to automatically select the best attention backend (FA3 or XFormers)
 
     print(f"--- vLLM Benchmark | Model: {model_name} ---")
     print(f"Seq Len: {seq_len} | Batch: {batch_size}")
