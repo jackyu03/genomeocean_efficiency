@@ -18,7 +18,7 @@ def run_benchmark(model_name: str, seq_len: int, batch_size: int, use_fp8_kv: bo
         "gpu_memory_utilization": 0.90,
         "max_num_seqs": batch_size,
         "max_model_len": seq_len + 128,  # allow space for generation
-        "enforce_eager": False # Use CUDA graphs for max performance!
+        "enforce_eager": True # Fixes CUDA graph broadcast error with XFormers backend > 8192 tokens
     }
     
     if use_fp8_kv:
