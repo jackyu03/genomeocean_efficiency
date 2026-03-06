@@ -279,7 +279,8 @@ def main():
         
         if mode == "fp8":
             vllm_kwargs["kv_cache_dtype"] = "fp8"
-            log.info("Mode 'fp8' detected: Assigning fp8 KV Cache to vLLM.")
+            os.environ["VLLM_ATTENTION_BACKEND"] = "FLASHINFER"
+            log.info("Mode 'fp8' detected: Forcing VLLM_ATTENTION_BACKEND=FLASHINFER to bypass fallbacks.")
             
         try:
             llm = LLM(**vllm_kwargs)
