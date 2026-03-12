@@ -71,7 +71,11 @@ def compute_metrics_vllm(llm, genome_chunks):
         return []
             
     log.info(f"Submitting {len(all_chunks)} sequence chunks to vLLM engine for scoring...")
-    outputs = llm.generate(prompt_token_ids=all_chunks, sampling_params=sampling_params, use_tqdm=True)
+    outputs = llm.generate(
+        prompts=[{"prompt_token_ids": chunk} for chunk in all_chunks],
+        sampling_params=sampling_params, 
+        use_tqdm=True
+    )
     
     genome_nll = {i: 0.0 for i in range(len(genome_chunks))}
     genome_acc = {i: 0 for i in range(len(genome_chunks))}
@@ -143,7 +147,11 @@ def compute_throughput_vllm(llm, prompt_ids, max_new_tokens, batch_size):
         prompts_to_run = (prompts_to_run * multiplier)[:batch_size]
     
     log.info(f"Warming up vLLM generation engine...")
-    _ = llm.generate(prompt_token_ids=[prompts_to_run[0]], sampling_params=sampling_params, use_tqdm=False)
+    _ = llm.generate(
+        prompts=[{"prompt_token_ids": prompts_to_run[0]}],
+        sampling_params=sampling_params, 
+        use_tqdm=False
+    )
 
     log.info(f"Running Phase B (Efficiency/Throughput) on {len(prompts_to_run)} parallel sequences...")
     
@@ -152,7 +160,11 @@ def compute_throughput_vllm(llm, prompt_ids, max_new_tokens, batch_size):
     start_time = time.perf_counter()
     
     with EnergyMeter(gpu_index=gpu_index) as em:
-        _ = llm.generate(prompt_token_ids=prompts_to_run, sampling_params=sampling_params, use_tqdm=True)
+        _ = llm.generate(
+            prompts=[{"prompt_token_ids": p} for p in prompts_to_run],
+            sampling_params=sampling_params, 
+            use_tqdm=True
+        )
         
     end_time = time.perf_counter()
     duration = end_time - start_time
