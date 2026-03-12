@@ -279,8 +279,9 @@ def main():
         
         if mode == "fp8":
             vllm_kwargs["kv_cache_dtype"] = "fp8"
-            os.environ["VLLM_ATTENTION_BACKEND"] = "FLASHINFER"
-            log.info("Mode 'fp8' detected: Forcing VLLM_ATTENTION_BACKEND=FLASHINFER to bypass fallbacks.")
+            # In vLLM 0.11+, the dispatcher will automatically select FlashInfer 
+            # for FP8 KV caching when FlashAttention-3 is unavailable. 
+            log.info("Mode 'fp8' detected: Relying on vLLM dispatcher to route to optimal backend.")
             
         try:
             llm = LLM(**vllm_kwargs)
