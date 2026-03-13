@@ -250,6 +250,8 @@ def main():
     parser.add_argument("--context-len", type=int, default=1024, help="Max context length window")
     parser.add_argument("--stride", type=int, default=256, help="Window stride length")
     parser.add_argument("--gen-len", type=int, default=1024, help="Number of new tokens to generate in Phase B")
+    parser.add_argument("--skip-quality", action="store_true", help="Skip Phase A (Perplexity/Quality) and only run Phase B")
+    parser.add_argument("--n-repeats", type=int, default=1, help="Number of times to repeat Phase B for stability")
 
     args = parser.parse_args()
     
@@ -355,85 +357,84 @@ def main():
             log.error(f"Failed to load vLLM engine for mode {mode}: {e}")
             continue
         
-        log.info(f"=== Phase A: Quality Extraction ({mode}) ===")
-        if args.device == "cuda": torch.cuda.synchronize()
-        base_vram = torch.cuda.memory_allocated() / 1e9 if args.device == "cuda" else 0
-        
-        results_list = compute_metrics_vllm(llm, genome_chunks_list)
-        
-        for gid, res in zip(ordered_gids, results_list):
-            all_quality_results.append({
-                "genome_id": gid,
+        if not args.skip_quality:
+            log.info(f"=== Phase A: Quality Extraction ({mode}) ===")
+            if args.device == "cuda": torch.cuda.synchronize()
+            base_vram = torch.cuda.memory_allocated() / 1e9 if args.device == "cuda" else 0
+            
+            results_list = compute_metrics_vllm(llm, genome_chunks_list)
+            
+            for gid, res in zip(ordered_gids, results_list):
+                all_quality_results.append({
+                    "genome_id": gid,
+                    "quantization": mode,
+                    "model": args.model,
+                    "perplexity": res['perplexity'],
+                    "neg_log_likelihood": res['neg_log_likelihood'],
+                    "accuracy": res['accuracy'], 
+                    "total_tokens": res['total_tokens']
+                })
+        else:
+            log.info(f"Skipping Phase A as requested.")
+            base_vram = 0.0 # Placeholder
+            
+        # Phase B: Pure Throughput & Efficiency
+        for repeat_idx in range(args.n_repeats):
+            log.info(f"=== Phase B: Efficiency ({mode}) | Repeat {repeat_idx+1}/{args.n_repeats} ===")
+            # Build prompt prefixes for generation
+            prompt_prefixes = []
+            for ids in all_input_ids:
+                prompt_prefixes.append(ids[:args.context_len])
+                
+            eff_stats = compute_throughput_vllm(llm, prompt_prefixes, args.gen_len, mode_batch)
+            
+            # Memory Computation
+            engine = llm.llm_engine
+            gpu_cache_total_gb = 0.0
+            
+            model_config = getattr(engine, "model_config", None)
+            cache_config = getattr(engine, "cache_config", None)
+            if not cache_config and hasattr(engine, "model_executor"):
+                cache_config = getattr(engine.model_executor, "cache_config", None)
+                
+            if cache_config:
+                num_gpu_blocks = getattr(cache_config, "num_gpu_blocks", 0)
+                block_size_bytes = getattr(cache_config, "cache_block_size_bytes", 0)
+                if block_size_bytes > 0:
+                    gpu_cache_total_gb = (num_gpu_blocks * block_size_bytes) / 1e9
+                else:
+                    block_size = getattr(cache_config, "block_size", 16)
+                    if model_config:
+                        n_kv_heads = getattr(model_config.hf_config, "num_key_value_heads", model_config.hf_config.num_attention_heads)
+                        head_dim = model_config.hf_config.hidden_size // model_config.hf_config.num_attention_heads
+                        n_layers = model_config.hf_config.num_hidden_layers
+                        bytes_per_tok = 2 * n_layers * n_kv_heads * head_dim * (1 if mode == "fp8" else 2)
+                        gpu_cache_total_gb = (num_gpu_blocks * block_size * bytes_per_tok) / 1e9
+            
+            if model_config:
+                n_kv_heads = getattr(model_config.hf_config, "num_key_value_heads", model_config.hf_config.num_attention_heads)
+                head_dim = model_config.hf_config.hidden_size // model_config.hf_config.num_attention_heads
+                n_layers = model_config.hf_config.num_hidden_layers
+                bytes_per_tok = (2 * n_layers * n_kv_heads * head_dim * (1 if mode == "fp8" else 2)) / 1e9
+                actual_kv_usage = mode_batch * (args.context_len + args.gen_len) * bytes_per_tok
+            else:
+                actual_kv_usage = 0
+                
+            actual_vram_gb = base_vram + actual_kv_usage
+            peak_vram_gb = base_vram + gpu_cache_total_gb
+                
+            eff_stats.update({
                 "quantization": mode,
                 "model": args.model,
-                "perplexity": res['perplexity'],
-                "neg_log_likelihood": res['neg_log_likelihood'],
-                "accuracy": res['accuracy'], 
-                "total_tokens": res['total_tokens']
+                "batch_size": mode_batch,
+                "repeat": repeat_idx + 1,
+                "static_vram_GB": round(base_vram, 2),
+                "actual_vram_GB": round(actual_vram_gb, 2),
+                "peak_vram_GB": round(peak_vram_gb, 2)
             })
             
-        log.info(f"=== Phase B: Pure Throughput & Efficiency ({mode}) ===")
-        # Build prompt prefixes for generation
-        prompt_prefixes = []
-        for ids in all_input_ids:
-            prompt_prefixes.append(ids[:args.context_len])
-            
-        eff_stats = compute_throughput_vllm(llm, prompt_prefixes, args.gen_len, mode_batch)
-        
-        # Memory Computation
-        # vLLM pre-allocates a massive pool (the 'Peak' Pool). We report both:
-        # 1. 'Pool' (The reserved vRAM vLLM claimed)
-        # 2. 'Actual' (Estimated memory for weights + active KV tokens in flight)
-        engine = llm.llm_engine
-        gpu_cache_total_gb = 0.0
-        
-        # In vLLM V1, engine structures are different. We try to be robust.
-        model_config = getattr(engine, "model_config", None)
-        cache_config = getattr(engine, "cache_config", None)
-        if not cache_config and hasattr(engine, "model_executor"):
-            cache_config = getattr(engine.model_executor, "cache_config", None)
-            
-        if cache_config:
-            num_gpu_blocks = getattr(cache_config, "num_gpu_blocks", 0)
-            block_size_bytes = getattr(cache_config, "cache_block_size_bytes", 0)
-            if block_size_bytes > 0:
-                gpu_cache_total_gb = (num_gpu_blocks * block_size_bytes) / 1e9
-            else:
-                # Manual calculation backup
-                block_size = getattr(cache_config, "block_size", 16)
-                if model_config:
-                    # GQA-aware KV token size
-                    n_kv_heads = getattr(model_config.hf_config, "num_key_value_heads", model_config.hf_config.num_attention_heads)
-                    head_dim = model_config.hf_config.hidden_size // model_config.hf_config.num_attention_heads
-                    n_layers = model_config.hf_config.num_hidden_layers
-                    # 2 (K+V) * layers * heads * dim * bytes
-                    bytes_per_tok = 2 * n_layers * n_kv_heads * head_dim * (1 if mode == "fp8" else 2)
-                    gpu_cache_total_gb = (num_gpu_blocks * block_size * bytes_per_tok) / 1e9
-        
-        # Estimate 'Actual' usage: Weights + (Batch * sequence_len * BytesPerToken)
-        if model_config:
-            n_kv_heads = getattr(model_config.hf_config, "num_key_value_heads", model_config.hf_config.num_attention_heads)
-            head_dim = model_config.hf_config.hidden_size // model_config.hf_config.num_attention_heads
-            n_layers = model_config.hf_config.num_hidden_layers
-            bytes_per_tok = (2 * n_layers * n_kv_heads * head_dim * (1 if mode == "fp8" else 2)) / 1e9
-            actual_kv_usage = mode_batch * (args.context_len + args.gen_len) * bytes_per_tok
-        else:
-            # Absolute fallback
-            actual_kv_usage = 0
-            
-        actual_vram_gb = base_vram + actual_kv_usage
-        peak_vram_gb = base_vram + gpu_cache_total_gb
-            
-        eff_stats.update({
-            "quantization": mode,
-            "model": args.model,
-            "batch_size": mode_batch,
-            "static_vram_GB": round(base_vram, 2),
-            "actual_vram_GB": round(actual_vram_gb, 2),
-            "peak_vram_GB": round(peak_vram_gb, 2)
-        })
-        
-        all_eff_results.append(eff_stats)
+            all_eff_results.append(eff_stats)
+
         cleanup_vllm(llm)
 
     if all_quality_results:
@@ -453,28 +454,38 @@ def main():
         
         for mode in modes:
             mode_batch = batch_map[mode]
-            subset_q = df_qual[df_qual["quantization"] == mode]
-            subset_e = df_eff[df_eff["quantization"] == mode]
-            if len(subset_q) == 0: continue
+            subset_q = df_qual[df_qual["quantization"] == mode] if not df_qual.empty else pd.DataFrame()
+            subset_e = df_eff[df_eff["quantization"] == mode] if not df_eff.empty else pd.DataFrame()
             
-            mean_ppl = subset_q["perplexity"].mean()
-            std_ppl = subset_q["perplexity"].std()
+            line = f"\nMode: {mode}\n"
             
-            mean_nll = subset_q["neg_log_likelihood"].mean()
-            std_nll = subset_q["neg_log_likelihood"].std()
+            if not subset_q.empty:
+                mean_ppl = subset_q["perplexity"].mean()
+                std_ppl = subset_q["perplexity"].std()
+                mean_nll = subset_q["neg_log_likelihood"].mean()
+                std_nll = subset_q["neg_log_likelihood"].std()
+                line += (f"  [Quality - N={len(subset_q)} genomes]\n"
+                        f"  Perplexity: {mean_ppl:.4f} ± {std_ppl:.4f}\n"
+                        f"  NLL:        {mean_nll:.4f} ± {std_nll:.4f}\n")
+            else:
+                line += "  [Quality - SKIPPED]\n"
             
-            eff_row = subset_e.iloc[0] if not subset_e.empty else {}
+            if not subset_e.empty:
+                # Average efficiency metrics across repeats
+                mean_tps = subset_e["throughput_tps"].mean()
+                std_tps = subset_e["throughput_tps"].std()
+                mean_power = subset_e["avg_power_W"].mean()
+                mean_eff = subset_e["tokens_per_watt"].mean()
+                mean_vram_act = subset_e["actual_vram_GB"].mean()
+                mean_vram_pk = subset_e["peak_vram_GB"].mean()
+                
+                line += (f"  [Efficiency - Batch: {mode_batch}, Repeats: {len(subset_e)}]\n"
+                        f"  Throughput: {mean_tps:.2f} tokens/sec {'(±'+str(round(std_tps,2))+')' if len(subset_e)>1 else ''}\n"
+                        f"  Power:      {mean_power:.2f} W\n"
+                        f"  Efficiency: {mean_eff:.2f} tokens/watt\n"
+                        f"  VRAM Actual: {mean_vram_act:.2f} GB\n"
+                        f"  VRAM Pool:   {mean_vram_pk:.2f} GB\n")
             
-            line = (f"\nMode: {mode}\n"
-                    f"  [Quality - N={len(subset_q)} genomes]\n"
-                    f"  Perplexity: {mean_ppl:.4f} ± {std_ppl:.4f}\n"
-                    f"  NLL:        {mean_nll:.4f} ± {std_nll:.4f}\n"
-                    f"  [Efficiency - Batch: {mode_batch}]\n"
-                    f"  Throughput: {eff_row.get('throughput_tps', 0)} tokens/sec\n"
-                    f"  Power:      {eff_row.get('avg_power_W', 0)} W\n"
-                    f"  Efficiency: {eff_row.get('tokens_per_watt', 0)} tokens/watt\n"
-                    f"  VRAM Actual: {eff_row.get('actual_vram_GB', 0)} GB\n"
-                    f"  VRAM Pool:   {eff_row.get('peak_vram_GB', 0)} GB\n")
             summary_lines.append(line)
             print(line)
                 
