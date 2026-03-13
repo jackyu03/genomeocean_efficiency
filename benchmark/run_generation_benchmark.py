@@ -237,9 +237,10 @@ def main():
     cleanup_vllm()
     parser = argparse.ArgumentParser(description="GenomeOcean Generation Quality Benchmark (vLLM Accelerated)")
     parser.add_argument("--csv", type=str, required=True, help="Input CSV (genome_id, seq)")
-    parser.add_argument("--model", type=str, required=True, help="HF Model ID")
+    parser.add_argument("--model", type=str, required=True, help="HF Model ID (Baseline for all modes)")
+    parser.add_argument("--model-w8a8", type=str, default=None, help="Path to quantized W8A8 model (required for Protocol B.2)")
     parser.add_argument("--outdir", type=str, default="./results_gen", help="Base output dir")
-    parser.add_argument("--quant-modes", type=str, nargs="+", default=["bf16", "fp8"], help="Modes to benchmark (e.g. bf16 fp8)")
+    parser.add_argument("--quant-modes", type=str, nargs="+", default=["bf16", "fp8"], help="Modes (e.g. bf16 fp8 fp8_v2)")
     parser.add_argument("--n-genomes", type=int, default=50, help="Num genomes to eval (default 50)")
     parser.add_argument("--tokens-per-genome", type=int, default=102400, help="Target tokens per genome (~500k bp)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
@@ -334,8 +335,18 @@ def main():
         log.info(f"\n=== Evaluating Mode: {mode} (Batch: {mode_batch}) ===")
         log.info("Booting vLLM Engine...")
         
+        # Protocol Selection Logic
+        # bf16: Baseline (W16A16)
+        # fp8: Protocol B.1 (KV Cache only)
+        # fp8_v2: Protocol B.2 (Weight + KV Cache)
+        
+        current_model = args.model
+        if "v2" in mode and args.model_w8a8:
+            current_model = args.model_w8a8
+            log.info(f"Protocol B.2 Detected: Switching to quantized model: {current_model}")
+        
         vllm_kwargs = {
-            "model": args.model,
+            "model": current_model,
             "trust_remote_code": True,
             "dtype": args.precision,
             "tensor_parallel_size": 1,
@@ -345,11 +356,13 @@ def main():
             "enable_prefix_caching": False
         }
         
-        if mode == "fp8":
+        if "fp8" in mode:
+            log.info(f"Mode '{mode}' detected: Enabling FP8 KV Cache storage.")
             vllm_kwargs["kv_cache_dtype"] = "fp8"
-            # In vLLM 0.11+, the dispatcher will automatically select FlashInfer 
-            # for FP8 KV caching when FlashAttention-3 is unavailable. 
-            log.info("Mode 'fp8' detected: Relying on vLLM dispatcher to route to optimal backend.")
+            if "v1" in mode or mode == "fp8":
+                log.info("Enabled Protocol B.1 (KV Cache only)")
+            elif "v2" in mode:
+                log.info("Enabled Protocol B.2 (Weight + KV Cache)")
             
         try:
             llm = LLM(**vllm_kwargs)
