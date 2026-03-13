@@ -327,10 +327,30 @@ def main():
             
         eff_stats = compute_throughput_vllm(llm, prompt_prefixes, args.gen_len, args.batch_size)
         
-        if args.device == "cuda":
-            # vLLM manages its own memory pool outside of PyTorch's native allocator.
-            # torch.cuda.max_memory_allocated() will only show memory that PyTorch allocated directly.
-            # To get the true peak memory including vLLM's KV cache and model weights, we query the GPU directly.
+        engine = llm.llm_engine
+        if hasattr(engine, 'model_executor') and hasattr(engine.model_executor, 'cache_config'):
+            try:
+                # vLLM calculates the number of GPU blocks to allocate. 
+                # We can calculate the exact KV cache memory footprint in bytes:
+                # num_blocks * block_size (tokens/block) * (num_layers * 2 * num_kv_heads * head_size * dtype_size_in_bytes)
+                # For vLLM, cache_config usually has the exact block size in bytes.
+                num_gpu_blocks = engine.model_executor.cache_config.num_gpu_blocks
+                
+                # Fetching the exact size of a single block in bytes from the cache config
+                if hasattr(engine.model_executor.cache_config, 'cache_block_size_bytes'):
+                    block_size_bytes = engine.model_executor.cache_config.cache_block_size_bytes
+                    gpu_cache = num_gpu_blocks * block_size_bytes
+                    peak_vram = (base_vram + gpu_cache) / 1e9
+                else:
+                    # Fallback approach if vLLM version differs
+                    free_mem, total_mem = torch.cuda.mem_get_info()
+                    peak_vram = (total_mem - free_mem) / 1e9
+            except Exception as e:
+                log.warning(f"Could not compute exact KV cache footprint natively: {e}")
+                free_mem, total_mem = torch.cuda.mem_get_info()
+                peak_vram = (total_mem - free_mem) / 1e9
+        elif args.device == "cuda":
+            # Direct OS-level query (will show ~90% due to vLLM's pre-allocation)
             free_mem, total_mem = torch.cuda.mem_get_info()
             peak_vram = (total_mem - free_mem) / 1e9
         else:
