@@ -170,6 +170,13 @@ def compute_throughput_vllm(llm, prompt_ids, max_new_tokens, batch_size):
     # This ensures we measure the overhead of UNIQUE biological sequences.
     # vLLM's internal scheduler will process these up to the engine's 'max_num_seqs' limit.
 
+    log.info(f"Warming up vLLM generation engine...")
+    _ = llm.generate(
+        prompts=[{"prompt_token_ids": prompts_to_run[0]}],
+        sampling_params=sampling_params, 
+        use_tqdm=False
+    )
+
     log.info(f"Running Phase B (Efficiency/Throughput) on {len(prompts_to_run)} sequences...")
     
     gpu_index = 0
