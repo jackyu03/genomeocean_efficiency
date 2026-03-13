@@ -238,7 +238,7 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--device", type=str, default="cuda", help="Device (currently fixed to cuda for vLLM)")
     parser.add_argument("--precision", type=str, default="bfloat16", help="Precision format")
-    parser.add_argument("--batch-size", type=int, default=128, help="Batch size for concurrent generation")
+    parser.add_argument("--batch-sizes", type=int, nargs="+", default=[128], help="Batch sizes for concurrent generation (one per mode or one for all)")
     parser.add_argument("--context-len", type=int, default=1024, help="Max context length window")
     parser.add_argument("--stride", type=int, default=256, help="Window stride length")
     parser.add_argument("--gen-len", type=int, default=1024, help="Number of new tokens to generate in Phase B")
@@ -310,8 +310,19 @@ def main():
     # Resolve 'standard' to 'bf16'
     modes = [STANDARD_MODE if m == "standard" else m for m in modes]
     
+    # Map batch sizes to modes
+    batch_sizes = args.batch_sizes
+    if len(batch_sizes) == 1:
+        batch_map = {m: batch_sizes[0] for m in modes}
+    elif len(batch_sizes) == len(modes):
+        batch_map = {m: b for m, b in zip(modes, batch_sizes)}
+    else:
+        log.error(f"Mismatch between number of modes ({len(modes)}) and batch sizes ({len(batch_sizes)}). Provide either 1 or {len(modes)} batch sizes.")
+        sys.exit(1)
+    
     for mode in modes:
-        log.info(f"\n=== Evaluating Mode: {mode} ===")
+        mode_batch = batch_map[mode]
+        log.info(f"\n=== Evaluating Mode: {mode} (Batch: {mode_batch}) ===")
         log.info("Booting vLLM Engine...")
         
         from vllm import LLM
@@ -320,7 +331,7 @@ def main():
             "trust_remote_code": True,
             "dtype": args.precision,
             "tensor_parallel_size": 1,
-            "max_num_seqs": args.batch_size, 
+            "max_num_seqs": mode_batch, 
             "max_model_len": max_dataset_len + args.gen_len + 128,
             "enforce_eager": False
         }
@@ -361,7 +372,7 @@ def main():
         for ids in all_input_ids:
             prompt_prefixes.append(ids[:args.context_len])
             
-        eff_stats = compute_throughput_vllm(llm, prompt_prefixes, args.gen_len, args.batch_size)
+        eff_stats = compute_throughput_vllm(llm, prompt_prefixes, args.gen_len, mode_batch)
         
         # Memory Computation
         # vLLM pre-allocates a massive pool (the 'Peak' Pool). We report both:
@@ -378,14 +389,14 @@ def main():
         # Actual Estimation: Weights + (Batch * context_len * BytesPerToken)
         # Hidden=3072, L32, KV_Size = 2 * L * H * Precision
         bytes_per_token = (2 * 32 * 3072 * (1 if mode == "fp8" else 2)) / 1e9
-        actual_kv_usage = args.batch_size * (args.context_len + args.gen_len) * bytes_per_token
+        actual_kv_usage = mode_batch * (args.context_len + args.gen_len) * bytes_per_token
         actual_vram_gb = base_vram + actual_kv_usage
         peak_vram_gb = base_vram + gpu_cache_total_gb
             
         eff_stats.update({
             "quantization": mode,
             "model": args.model,
-            "batch_size": args.batch_size,
+            "batch_size": mode_batch,
             "static_vram_GB": round(base_vram, 2),
             "actual_vram_GB": round(actual_vram_gb, 2),
             "peak_vram_GB": round(peak_vram_gb, 2)
@@ -410,6 +421,7 @@ def main():
         summary_lines = ["=== Unified Generation Benchmark Summary ===\n"]
         
         for mode in modes:
+            mode_batch = batch_map[mode]
             subset_q = df_qual[df_qual["quantization"] == mode]
             subset_e = df_eff[df_eff["quantization"] == mode]
             if len(subset_q) == 0: continue
@@ -426,7 +438,7 @@ def main():
                     f"  [Quality - N={len(subset_q)} genomes]\n"
                     f"  Perplexity: {mean_ppl:.4f} ± {std_ppl:.4f}\n"
                     f"  NLL:        {mean_nll:.4f} ± {std_nll:.4f}\n"
-                    f"  [Efficiency - Batch: {args.batch_size}]\n"
+                    f"  [Efficiency - Batch: {mode_batch}]\n"
                     f"  Throughput: {eff_row.get('throughput_tps', 0)} tokens/sec\n"
                     f"  Power:      {eff_row.get('avg_power_W', 0)} W\n"
                     f"  Efficiency: {eff_row.get('tokens_per_watt', 0)} tokens/watt\n"
