@@ -31,8 +31,17 @@ from core.model_loader import STANDARD_MODE
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 log = logging.getLogger("gen_bench_vllm")
 
-def cleanup_vllm():
+def cleanup_vllm(llm=None):
     """Forcefully destroys any existing vLLM engine and clears GPU memory."""
+    if llm is not None:
+        try:
+            # vLLM V1 specific shutdown
+            if hasattr(llm, "llm_engine") and hasattr(llm.llm_engine, "shutdown"):
+                llm.llm_engine.shutdown()
+            del llm
+        except Exception as e:
+            log.warning(f"Error during engine shutdown: {e}")
+
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -42,7 +51,7 @@ def cleanup_vllm():
         destroy_distributed_environment()
     except:
         pass
-    time.sleep(2)
+    time.sleep(5) # Increased wait for process reap
 
 def chunk_genome(input_ids, context_len, stride):
     seq_len = len(input_ids)
@@ -377,16 +386,41 @@ def main():
         # 2. 'Actual' (Estimated memory for weights + active KV tokens in flight)
         engine = llm.llm_engine
         gpu_cache_total_gb = 0.0
-        if hasattr(engine, 'model_executor') and hasattr(engine.model_executor, 'cache_config'):
-            num_gpu_blocks = engine.model_executor.cache_config.num_gpu_blocks
-            if hasattr(engine.model_executor.cache_config, 'cache_block_size_bytes'):
-                block_size_bytes = engine.model_executor.cache_config.cache_block_size_bytes
-                gpu_cache_total_gb = (num_gpu_blocks * block_size_bytes) / 1e9
         
-        # Actual Estimation: Weights + (Batch * context_len * BytesPerToken)
-        # Hidden=3072, L32, KV_Size = 2 * L * H * Precision
-        bytes_per_token = (2 * 32 * 3072 * (1 if mode == "fp8" else 2)) / 1e9
-        actual_kv_usage = mode_batch * (args.context_len + args.gen_len) * bytes_per_token
+        # In vLLM V1, engine structures are different. We try to be robust.
+        model_config = getattr(engine, "model_config", None)
+        cache_config = getattr(engine, "cache_config", None)
+        if not cache_config and hasattr(engine, "model_executor"):
+            cache_config = getattr(engine.model_executor, "cache_config", None)
+            
+        if cache_config:
+            num_gpu_blocks = getattr(cache_config, "num_gpu_blocks", 0)
+            block_size_bytes = getattr(cache_config, "cache_block_size_bytes", 0)
+            if block_size_bytes > 0:
+                gpu_cache_total_gb = (num_gpu_blocks * block_size_bytes) / 1e9
+            else:
+                # Manual calculation backup
+                block_size = getattr(cache_config, "block_size", 16)
+                if model_config:
+                    # GQA-aware KV token size
+                    n_kv_heads = getattr(model_config.hf_config, "num_key_value_heads", model_config.hf_config.num_attention_heads)
+                    head_dim = model_config.hf_config.hidden_size // model_config.hf_config.num_attention_heads
+                    n_layers = model_config.hf_config.num_hidden_layers
+                    # 2 (K+V) * layers * heads * dim * bytes
+                    bytes_per_tok = 2 * n_layers * n_kv_heads * head_dim * (1 if mode == "fp8" else 2)
+                    gpu_cache_total_gb = (num_gpu_blocks * block_size * bytes_per_tok) / 1e9
+        
+        # Estimate 'Actual' usage: Weights + (Batch * sequence_len * BytesPerToken)
+        if model_config:
+            n_kv_heads = getattr(model_config.hf_config, "num_key_value_heads", model_config.hf_config.num_attention_heads)
+            head_dim = model_config.hf_config.hidden_size // model_config.hf_config.num_attention_heads
+            n_layers = model_config.hf_config.num_hidden_layers
+            bytes_per_tok = (2 * n_layers * n_kv_heads * head_dim * (1 if mode == "fp8" else 2)) / 1e9
+            actual_kv_usage = mode_batch * (args.context_len + args.gen_len) * bytes_per_tok
+        else:
+            # Absolute fallback
+            actual_kv_usage = 0
+            
         actual_vram_gb = base_vram + actual_kv_usage
         peak_vram_gb = base_vram + gpu_cache_total_gb
             
@@ -400,7 +434,7 @@ def main():
         })
         
         all_eff_results.append(eff_stats)
-        cleanup_vllm()
+        cleanup_vllm(llm)
 
     if all_quality_results:
         df_qual = pd.DataFrame(all_quality_results)
