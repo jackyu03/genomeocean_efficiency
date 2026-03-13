@@ -286,7 +286,7 @@ def main():
             "tensor_parallel_size": 1,
             "max_num_seqs": args.batch_size, 
             "max_model_len": max_dataset_len + args.gen_len + 128,
-            "enforce_eager": True
+            "enforce_eager": False
         }
         
         if mode == "fp8":
