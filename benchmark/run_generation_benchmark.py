@@ -12,11 +12,16 @@ import logging
 import pandas as pd
 import numpy as np
 import math
+import gc
+import time
 from pathlib import Path
 from datetime import datetime
 from tqdm import tqdm
 
+from tqdm import tqdm
+
 from transformers import AutoTokenizer
+from vllm.distributed.parallel_state import destroy_model_parallel, destroy_distributed_environment
 
 # Ensure we can import modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -155,7 +160,6 @@ def compute_throughput_vllm(llm, prompt_ids, max_new_tokens, batch_size):
 
     log.info(f"Running Phase B (Efficiency/Throughput) on {len(prompts_to_run)} parallel sequences...")
     
-    import time
     gpu_index = 0
     start_time = time.perf_counter()
     
@@ -365,19 +369,16 @@ def main():
         all_eff_results.append(eff_stats)
             
         del llm
-        import gc
         gc.collect()
         if args.device == "cuda":
             torch.cuda.empty_cache()
             
         try:
-            from vllm.distributed.parallel_state import destroy_model_parallel, destroy_distributed_environment
             destroy_model_parallel()
             destroy_distributed_environment()
         except Exception as e:
             log.warning(f"Could not explicitly destroy distributed environment: {e}")
             
-        import time
         time.sleep(2) # Give OS a moment to reclaim GPU memory from spawned processes
 
     if all_quality_results:
