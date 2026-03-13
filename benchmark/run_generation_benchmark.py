@@ -169,13 +169,6 @@ def compute_throughput_vllm(llm, prompt_ids, max_new_tokens, batch_size):
     # We no longer replicate prompts to fill a batch. 
     # This ensures we measure the overhead of UNIQUE biological sequences.
     # vLLM's internal scheduler will process these up to the engine's 'max_num_seqs' limit.
-    
-    log.info(f"Warming up vLLM generation engine...")
-    _ = llm.generate(
-        prompts=[{"prompt_token_ids": prompts_to_run[0]}],
-        sampling_params=sampling_params, 
-        use_tqdm=False
-    )
 
     log.info(f"Running Phase B (Efficiency/Throughput) on {len(prompts_to_run)} sequences...")
     
@@ -250,7 +243,7 @@ def main():
     parser.add_argument("--stride", type=int, default=256, help="Window stride length")
     parser.add_argument("--gen-len", type=int, default=1024, help="Number of new tokens to generate in Phase B")
     parser.add_argument("--skip-quality", action="store_true", help="Skip Phase A (Perplexity/Quality) and only run Phase B")
-    parser.add_argument("--n-repeats", type=int, default=1, help="Number of times to repeat Phase B for stability")
+    parser.add_argument("--n-repeats", type=int, default=5, help="Workload multiplier for Phase B (default 5x n-genomes)")
 
     args = parser.parse_args()
     
@@ -341,7 +334,8 @@ def main():
             "tensor_parallel_size": 1,
             "max_num_seqs": mode_batch, 
             "max_model_len": max_dataset_len + args.gen_len + 128,
-            "enforce_eager": False
+            "enforce_eager": False,
+            "enable_prefix_caching": False
         }
         
         if mode == "fp8":
@@ -377,62 +371,67 @@ def main():
             log.info(f"Skipping Phase A as requested.")
             base_vram = 0.0 # Placeholder
             
-        # Phase B: Pure Throughput & Efficiency
-        for repeat_idx in range(args.n_repeats):
-            log.info(f"=== Phase B: Efficiency ({mode}) | Repeat {repeat_idx+1}/{args.n_repeats} ===")
-            # Build prompt prefixes for generation
-            prompt_prefixes = []
-            for ids in all_input_ids:
-                prompt_prefixes.append(ids[:args.context_len])
-                
-            eff_stats = compute_throughput_vllm(llm, prompt_prefixes, args.gen_len, mode_batch)
+        # Phase B: Pure Throughput & Efficiency (Scaled single submission)
+        log.info(f"=== Phase B: Efficiency ({mode}) | Workload Scaled x{args.n_repeats} ===")
+        # Build prompt prefixes for generation
+        prompt_prefixes = []
+        for ids in all_input_ids:
+            prompt_prefixes.append(ids[:args.context_len])
+        
+        # Scale the workload as requested (N * Repeats) in one single call
+        scaled_prompts = prompt_prefixes * args.n_repeats
             
-            # Memory Computation
-            engine = llm.llm_engine
-            gpu_cache_total_gb = 0.0
+        eff_stats = compute_throughput_vllm(llm, scaled_prompts, args.gen_len, mode_batch)
+        
+        # Memory Computation
+        engine = llm.llm_engine
+        gpu_cache_total_gb = 0.0
+        
+        model_config = getattr(engine, "model_config", None)
+        cache_config = getattr(engine, "cache_config", None)
+        if not cache_config and hasattr(engine, "model_executor"):
+            cache_config = getattr(engine.model_executor, "cache_config", None)
             
-            model_config = getattr(engine, "model_config", None)
-            cache_config = getattr(engine, "cache_config", None)
-            if not cache_config and hasattr(engine, "model_executor"):
-                cache_config = getattr(engine.model_executor, "cache_config", None)
-                
-            if cache_config:
-                num_gpu_blocks = getattr(cache_config, "num_gpu_blocks", 0)
-                block_size_bytes = getattr(cache_config, "cache_block_size_bytes", 0)
-                if block_size_bytes > 0:
-                    gpu_cache_total_gb = (num_gpu_blocks * block_size_bytes) / 1e9
-                else:
-                    block_size = getattr(cache_config, "block_size", 16)
-                    if model_config:
-                        n_kv_heads = getattr(model_config.hf_config, "num_key_value_heads", model_config.hf_config.num_attention_heads)
-                        head_dim = model_config.hf_config.hidden_size // model_config.hf_config.num_attention_heads
-                        n_layers = model_config.hf_config.num_hidden_layers
-                        bytes_per_tok = 2 * n_layers * n_kv_heads * head_dim * (1 if mode == "fp8" else 2)
-                        gpu_cache_total_gb = (num_gpu_blocks * block_size * bytes_per_tok) / 1e9
-            
-            if model_config:
-                n_kv_heads = getattr(model_config.hf_config, "num_key_value_heads", model_config.hf_config.num_attention_heads)
-                head_dim = model_config.hf_config.hidden_size // model_config.hf_config.num_attention_heads
-                n_layers = model_config.hf_config.num_hidden_layers
-                bytes_per_tok = (2 * n_layers * n_kv_heads * head_dim * (1 if mode == "fp8" else 2)) / 1e9
-                actual_kv_usage = mode_batch * (args.context_len + args.gen_len) * bytes_per_tok
+        if cache_config:
+            num_gpu_blocks = getattr(cache_config, "num_gpu_blocks", 0)
+            block_size_bytes = getattr(cache_config, "cache_block_size_bytes", 0)
+            if block_size_bytes > 0:
+                gpu_cache_total_gb = (num_gpu_blocks * block_size_bytes) / 1e9
             else:
-                actual_kv_usage = 0
-                
-            actual_vram_gb = base_vram + actual_kv_usage
-            peak_vram_gb = base_vram + gpu_cache_total_gb
-                
-            eff_stats.update({
-                "quantization": mode,
-                "model": args.model,
-                "batch_size": mode_batch,
-                "repeat": repeat_idx + 1,
-                "static_vram_GB": round(base_vram, 2),
-                "actual_vram_GB": round(actual_vram_gb, 2),
-                "peak_vram_GB": round(peak_vram_gb, 2)
-            })
+                # Manual calculation backup
+                block_size = getattr(cache_config, "block_size", 16)
+                if model_config:
+                    # GQA-aware KV token size
+                    n_kv_heads = getattr(model_config.hf_config, "num_key_value_heads", model_config.hf_config.num_attention_heads)
+                    head_dim = model_config.hf_config.hidden_size // model_config.hf_config.num_attention_heads
+                    n_layers = model_config.hf_config.num_hidden_layers
+                    # 2 (K+V) * layers * heads * dim * bytes
+                    bytes_per_tok = 2 * n_layers * n_kv_heads * head_dim * (1 if mode == "fp8" else 2)
+                    gpu_cache_total_gb = (num_gpu_blocks * block_size * bytes_per_tok) / 1e9
+        
+        if model_config:
+            n_kv_heads = getattr(model_config.hf_config, "num_key_value_heads", model_config.hf_config.num_attention_heads)
+            head_dim = model_config.hf_config.hidden_size // model_config.hf_config.num_attention_heads
+            n_layers = model_config.hf_config.num_hidden_layers
+            bytes_per_tok = (2 * n_layers * n_kv_heads * head_dim * (1 if mode == "fp8" else 2)) / 1e9
+            actual_kv_usage = mode_batch * (args.context_len + args.gen_len) * bytes_per_tok
+        else:
+            actual_kv_usage = 0
             
-            all_eff_results.append(eff_stats)
+        actual_vram_gb = base_vram + actual_kv_usage
+        peak_vram_gb = base_vram + gpu_cache_total_gb
+            
+        eff_stats.update({
+            "quantization": mode,
+            "model": args.model,
+            "batch_size": mode_batch,
+            "workload_multiplier": args.n_repeats,
+            "static_vram_GB": round(base_vram, 2),
+            "actual_vram_GB": round(actual_vram_gb, 2),
+            "peak_vram_GB": round(peak_vram_gb, 2)
+        })
+        
+        all_eff_results.append(eff_stats)
 
         cleanup_vllm(llm)
 
