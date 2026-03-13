@@ -365,7 +365,20 @@ def main():
         all_eff_results.append(eff_stats)
             
         del llm
-        torch.cuda.empty_cache()
+        import gc
+        gc.collect()
+        if args.device == "cuda":
+            torch.cuda.empty_cache()
+            
+        try:
+            from vllm.distributed.parallel_state import destroy_model_parallel, destroy_distributed_environment
+            destroy_model_parallel()
+            destroy_distributed_environment()
+        except Exception as e:
+            log.warning(f"Could not explicitly destroy distributed environment: {e}")
+            
+        import time
+        time.sleep(2) # Give OS a moment to reclaim GPU memory from spawned processes
 
     if all_quality_results:
         df_qual = pd.DataFrame(all_quality_results)
