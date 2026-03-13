@@ -166,10 +166,9 @@ def compute_throughput_vllm(llm, prompt_ids, max_new_tokens, batch_size):
     )
     
     prompts_to_run = prompt_ids
-    if len(prompts_to_run) < batch_size:
-        # Replicate to fill batch size to properly stress test the GPU
-        multiplier = math.ceil(batch_size / max(1, len(prompts_to_run)))
-        prompts_to_run = (prompts_to_run * multiplier)[:batch_size]
+    # We no longer replicate prompts to fill a batch. 
+    # This ensures we measure the overhead of UNIQUE biological sequences.
+    # vLLM's internal scheduler will process these up to the engine's 'max_num_seqs' limit.
     
     log.info(f"Warming up vLLM generation engine...")
     _ = llm.generate(
@@ -178,7 +177,7 @@ def compute_throughput_vllm(llm, prompt_ids, max_new_tokens, batch_size):
         use_tqdm=False
     )
 
-    log.info(f"Running Phase B (Efficiency/Throughput) on {len(prompts_to_run)} parallel sequences...")
+    log.info(f"Running Phase B (Efficiency/Throughput) on {len(prompts_to_run)} sequences...")
     
     gpu_index = 0
     start_time = time.perf_counter()
