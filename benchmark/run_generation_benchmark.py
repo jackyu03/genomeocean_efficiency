@@ -327,8 +327,15 @@ def main():
             
         eff_stats = compute_throughput_vllm(llm, prompt_prefixes, args.gen_len, args.batch_size)
         
-        peak_vram = torch.cuda.max_memory_allocated() / 1e9 if args.device == "cuda" else 0
-        
+        if args.device == "cuda":
+            # vLLM manages its own memory pool outside of PyTorch's native allocator.
+            # torch.cuda.max_memory_allocated() will only show memory that PyTorch allocated directly.
+            # To get the true peak memory including vLLM's KV cache and model weights, we query the GPU directly.
+            free_mem, total_mem = torch.cuda.mem_get_info()
+            peak_vram = (total_mem - free_mem) / 1e9
+        else:
+            peak_vram = 0.0
+            
         eff_stats["quantization"] = mode
         eff_stats["model"] = args.model
         eff_stats["batch_size"] = args.batch_size
