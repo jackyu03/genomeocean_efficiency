@@ -18,7 +18,9 @@ from pathlib import Path
 from datetime import datetime
 from tqdm import tqdm
 
+import torch
 from transformers import AutoTokenizer
+from vllm import LLM, SamplingParams
 from vllm.distributed.parallel_state import destroy_model_parallel, destroy_distributed_environment
 
 # Ensure we can import modules
@@ -65,7 +67,6 @@ def compute_metrics_vllm(llm, genome_chunks):
     Computes Perplexity (NLL) by evaluating sliding window chunks via vLLM.
     genome_chunks: list of chunks arrays per genome.
     """
-    from vllm import SamplingParams
     
     sampling_params = SamplingParams(
         temperature=0.0,
@@ -147,7 +148,6 @@ def compute_throughput_vllm(llm, prompt_ids, max_new_tokens, batch_size):
     Computes purely raw generation throughput (tokens/sec) and handles Energy logging.
     prompt_ids: list of tokenized genome prompt prefixes.
     """
-    from vllm import SamplingParams
     
     # Pure generation, NO logprobs overhead to maximize speed
     sampling_params = SamplingParams(
@@ -171,7 +171,6 @@ def compute_throughput_vllm(llm, prompt_ids, max_new_tokens, batch_size):
 
     log.info(f"Running Phase B (Efficiency/Throughput) on {len(prompts_to_run)} parallel sequences...")
     
-    import torch
     gpu_index = 0
     start_time = time.perf_counter()
     
@@ -325,7 +324,6 @@ def main():
         log.info(f"\n=== Evaluating Mode: {mode} (Batch: {mode_batch}) ===")
         log.info("Booting vLLM Engine...")
         
-        from vllm import LLM
         vllm_kwargs = {
             "model": args.model,
             "trust_remote_code": True,
@@ -349,7 +347,6 @@ def main():
             continue
         
         log.info(f"=== Phase A: Quality Extraction ({mode}) ===")
-        import torch
         if args.device == "cuda": torch.cuda.synchronize()
         base_vram = torch.cuda.memory_allocated() / 1e9 if args.device == "cuda" else 0
         
