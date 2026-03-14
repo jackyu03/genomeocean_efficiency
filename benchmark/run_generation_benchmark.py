@@ -426,14 +426,14 @@ def main():
                     head_dim = model_config.hf_config.hidden_size // model_config.hf_config.num_attention_heads
                     n_layers = model_config.hf_config.num_hidden_layers
                     # 2 (K+V) * layers * heads * dim * bytes
-                    bytes_per_tok = 2 * n_layers * n_kv_heads * head_dim * (1 if mode == "fp8" else 2)
+                    bytes_per_tok = 2 * n_layers * n_kv_heads * head_dim * (1 if "fp8" in mode else 2)
                     gpu_cache_total_gb = (num_gpu_blocks * block_size * bytes_per_tok) / 1e9
         
         if model_config:
             n_kv_heads = getattr(model_config.hf_config, "num_key_value_heads", model_config.hf_config.num_attention_heads)
             head_dim = model_config.hf_config.hidden_size // model_config.hf_config.num_attention_heads
             n_layers = model_config.hf_config.num_hidden_layers
-            bytes_per_tok = (2 * n_layers * n_kv_heads * head_dim * (1 if mode == "fp8" else 2)) / 1e9
+            bytes_per_tok = (2 * n_layers * n_kv_heads * head_dim * (1 if "fp8" in mode else 2)) / 1e9
             actual_kv_usage = mode_batch * (args.context_len + args.gen_len) * bytes_per_tok
         else:
             actual_kv_usage = 0
