@@ -422,18 +422,25 @@ def main():
                 block_size = getattr(cache_config, "block_size", 16)
                 if model_config:
                     # GQA-aware KV token size
-                    n_kv_heads = getattr(model_config.hf_config, "num_key_value_heads", model_config.hf_config.num_attention_heads)
-                    head_dim = model_config.hf_config.hidden_size // model_config.hf_config.num_attention_heads
-                    n_layers = model_config.hf_config.num_hidden_layers
+                    # Try common attributes for GQA head count
+                    hf = model_config.hf_config
+                    n_kv_heads = getattr(hf, "num_key_value_heads", getattr(hf, "n_kv_heads", hf.num_attention_heads))
+                    head_dim = hf.hidden_size // hf.num_attention_heads
+                    n_layers = hf.num_hidden_layers
                     # 2 (K+V) * layers * heads * dim * bytes
-                    bytes_per_tok = 2 * n_layers * n_kv_heads * head_dim * (1 if "fp8" in mode else 2)
+                    # User specifically requested factor of 1 ONLY for fp8_v2
+                    fact = 1 if mode == "fp8_v2" else 2
+                    bytes_per_tok = 2 * n_layers * n_kv_heads * head_dim * fact
                     gpu_cache_total_gb = (num_gpu_blocks * block_size * bytes_per_tok) / 1e9
         
         if model_config:
-            n_kv_heads = getattr(model_config.hf_config, "num_key_value_heads", model_config.hf_config.num_attention_heads)
-            head_dim = model_config.hf_config.hidden_size // model_config.hf_config.num_attention_heads
-            n_layers = model_config.hf_config.num_hidden_layers
-            bytes_per_tok = (2 * n_layers * n_kv_heads * head_dim * (1 if "fp8" in mode else 2)) / 1e9
+            hf = model_config.hf_config
+            n_kv_heads = getattr(hf, "num_key_value_heads", getattr(hf, "n_kv_heads", hf.num_attention_heads))
+            head_dim = hf.hidden_size // hf.num_attention_heads
+            n_layers = hf.num_hidden_layers
+            # User specifically requested factor of 1 ONLY for fp8_v2
+            fact = 1 if mode == "fp8_v2" else 2
+            bytes_per_tok = (2 * n_layers * n_kv_heads * head_dim * fact) / 1e9
             actual_kv_usage = mode_batch * (args.context_len + args.gen_len) * bytes_per_tok
         else:
             actual_kv_usage = 0
