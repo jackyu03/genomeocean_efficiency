@@ -238,9 +238,10 @@ def main():
     parser = argparse.ArgumentParser(description="GenomeOcean Generation Quality Benchmark (vLLM Accelerated)")
     parser.add_argument("--csv", type=str, required=True, help="Input CSV (genome_id, seq)")
     parser.add_argument("--model", type=str, required=True, help="HF Model ID (Baseline for all modes)")
-    parser.add_argument("--model-w8a8", type=str, default=None, help="Path to quantized W8A8 model (required for Protocol B.2)")
+    parser.add_argument("--model-w8a8", type=str, default=None, help="Path to quantized W8A8 model for Protocol B.2 (lm_head in BF16)")
+    parser.add_argument("--model-w8a8-full", type=str, default=None, help="Path to full-FP8 quantized model for Protocol B.3 (zero BF16 components)")
     parser.add_argument("--outdir", type=str, default="./results_gen", help="Base output dir")
-    parser.add_argument("--quant-modes", type=str, nargs="+", default=["bf16", "fp8"], help="Modes (e.g. bf16 fp8 fp8_v2)")
+    parser.add_argument("--quant-modes", type=str, nargs="+", default=["bf16", "fp8"], help="Modes: bf16 | fp8 (B.1) | fp8_v2 (B.2) | fp8_v3 (B.3)")
     parser.add_argument("--n-genomes", type=int, default=50, help="Num genomes to eval (default 50)")
     parser.add_argument("--tokens-per-genome", type=int, default=102400, help="Target tokens per genome (~500k bp)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
@@ -336,14 +337,18 @@ def main():
         log.info("Booting vLLM Engine...")
         
         # Protocol Selection Logic
-        # bf16: Baseline (W16A16)
-        # fp8: Protocol B.1 (KV Cache only)
-        # fp8_v2: Protocol B.2 (Weight + KV Cache)
-        
+        # bf16:    Baseline (W16A16)
+        # fp8:     Protocol B.1 (KV Cache only, weights in BF16)
+        # fp8_v2:  Protocol B.2 (W8A8, lm_head in BF16, KV in FP8)
+        # fp8_v3:  Protocol B.3 (Full FP8, zero BF16 components)
+
         current_model = args.model
         if "v2" in mode and args.model_w8a8:
             current_model = args.model_w8a8
             log.info(f"Protocol B.2 Detected: Switching to quantized model: {current_model}")
+        elif "v3" in mode and args.model_w8a8_full:
+            current_model = args.model_w8a8_full
+            log.info(f"Protocol B.3 Detected: Switching to full-FP8 model: {current_model}")
         
         vllm_kwargs = {
             "model": current_model,
@@ -362,7 +367,9 @@ def main():
             if "v1" in mode or mode == "fp8":
                 log.info("Enabled Protocol B.1 (KV Cache only)")
             elif "v2" in mode:
-                log.info("Enabled Protocol B.2 (Weight + KV Cache)")
+                log.info("Enabled Protocol B.2 (W8A8, lm_head in BF16)")
+            elif "v3" in mode:
+                log.info("Enabled Protocol B.3 (Full FP8, zero BF16 components)")
             
         try:
             llm = LLM(**vllm_kwargs)
