@@ -4,7 +4,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from llmcompressor import oneshot
 from llmcompressor.modifiers.quantization import QuantizationModifier
 
-def quantize_and_save(model_id, device, ignore_layers, save_dir, label):
+def quantize_and_save(model_id, device, ignore_layers, save_dir, label, include_lm_head=False):
     print(f"\n{'='*60}")
     print(f"  {label}")
     print(f"  Output: {save_dir}")
