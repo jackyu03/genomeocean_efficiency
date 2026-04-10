@@ -2,6 +2,9 @@
 
 This repository contains scripts for evaluating the efficiency and biological fidelity of Genomic Foundation Models (such as GenomeOcean) under post-training FP8 quantization. The codebase includes tools for data generation, embedding analysis, and high-throughput causal generation benchmarking.
 
+## Environment Setup
+Please use the official GenomeOcean repository to set up your Python environment before running these benchmarks: [https://github.com/jgi-genomeocean/genomeocean](https://github.com/jgi-genomeocean/genomeocean).
+
 ## 1. Dataset Generation
 Edit the parameters at the bottom of `assistive_scripts/generate_dataset.py` to produce datasets for different benchmarking protocols.
 
