@@ -25,10 +25,10 @@ from tqdm import tqdm
 # Ensure we can import modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from quantization_benchmark.quality_eval import evaluate_quantization_quality, extract_layer_outputs, compare_quantization_outputs, save_quality_results
-from binning_benchmark.eval import run_binning_eval
-from core.model_loader import load_model, get_max_length, STANDARD_MODE
-from core.metrics import EnergyMeter
+from unused_scripts.quantization_benchmark.quality_eval import evaluate_quantization_quality, extract_layer_outputs, compare_quantization_outputs, save_quality_results
+from embedding_benchmark.eval import run_binning_eval
+from assistive_scripts.core.model_loader import load_model, get_max_length, STANDARD_MODE
+from assistive_scripts.core.metrics import EnergyMeter
 from transformers import AutoTokenizer
 import seaborn as sns
 

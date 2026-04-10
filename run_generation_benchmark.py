@@ -25,8 +25,8 @@ from vllm.distributed.parallel_state import destroy_model_parallel, destroy_dist
 
 # Ensure we can import modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from core.metrics import EnergyMeter
-from core.model_loader import STANDARD_MODE
+from assistive_scripts.core.metrics import EnergyMeter
+from assistive_scripts.core.model_loader import STANDARD_MODE
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 log = logging.getLogger("gen_bench_vllm")

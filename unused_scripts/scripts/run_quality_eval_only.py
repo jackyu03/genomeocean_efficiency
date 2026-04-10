@@ -10,10 +10,10 @@ import argparse
 from pathlib import Path
 
 # Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from quantization_benchmark.quality_eval import evaluate_quantization_quality
-from quantization_benchmark.visualization import plot_quality_metrics
+from unused_scripts.quantization_benchmark.quality_eval import evaluate_quantization_quality
+from unused_scripts.quantization_benchmark.visualization import plot_quality_metrics
 
 
 def main():
