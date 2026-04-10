@@ -1,111 +1,124 @@
 # GenomeOcean Efficiency Benchmark
 
-A comprehensive benchmarking suite for genomic language models, integrating **Performance** (Speed/Energy), **Quality** (Distributional), and **Downstream Utility** (Binning) into a single, Unified Pipeline.
+This repository contains scripts for evaluating the efficiency and biological fidelity of Genomic Foundation Models (such as GenomeOcean) under post-training FP8 quantization. The codebase includes tools for data generation, embedding analysis, and high-throughput causal generation benchmarking.
 
-## 📂 Project Structure
+## 1. Dataset Generation
+Edit the parameters at the bottom of `assistive_scripts/generate_dataset.py` to produce datasets for different benchmarking protocols.
 
-```text
-benchmark/
-├── run_full_benchmark.py       # 🚀 Main entry point
-├── run_benchmark_hpc.sh        # SLURM submission script
-├── core/                       # Core utilities
-│   ├── model_loader.py         # Model loading & quantization configuration
-│   └── metrics.py              # Performance metrics (Energy/FLOPs)
-├── quantization_benchmark/     # Quality evaluation
-│   └── quality_eval.py         # KL-Divergence, Cosine Sim, etc.
-├── binning_benchmark/          # Downstream evaluation
-│   └── eval.py                 # UMAP + DBSCAN logic
+Protocol A Dataset (Embedding)
+Requires at least 20 species, 100 fragments per species, and 50,000 bp length each:
+```python
+df_result = sample_sequences_parallel(
+    directory='<GTDB dataset root>/GTDB/Bacteria/',
+    id_list=genome_ids, 
+    seqs_per_genome=100, 
+    seq_length=50000, 
+    n_species=20, 
+    seed=42
+)
+df_result.to_csv('embedding_dataset.csv', index=False)
 ```
 
-## ⚙️ The Pipeline: How It Works
-
-This benchmark runs a strictly controlled experiment to evaluate how model quantization affects genomic tasks. When you run `run_full_benchmark.py`, it executes the following steps:
-
-### 1. Data Loading & Filtering
-The script enforces reproducibility by controlling exactly which data is seen by the model.
--   **Input**: Loads the provided CSV dataset.
--   **Genome Selection** (`--n-genomes`, `--seed`): Randomly selects $N$ unique species (e.g., 20) from the dataset using a fixed random seed.
--   **Fragment Subsampling** (`--n-fragments`): For each selected species, it randomly selects $M$ non-overlapping fragments (e.g., 50).
--   **Output**: A fixed subset of sequences (e.g., $20 \times 50 = 1000$ sequences) that will be used for all subsequent steps.
-
-### 2. Initialization
--   It iterates through each requested **Quantization Mode** (e.g., `standard` (FP16), `8bit`, `4bit_nf4`).
--   For each mode, it loads the GenomeOcean model using `BitsAndBytesConfig`.
-
-### 3. Performance Profiling
--   **Inference**: The model processes the filtered dataset in batches.
--   **Metrics**:
-    -   **Throughput**: Sequences/sec and Tokens/sec.
-    -   **Power**: Logs real-time GPU power usage (Watts) via NVML to calculate **Tokens/Watt**.
-    -   **VRAM**: Tracks peak GPU memory usage.
--   **Embeddings**: Simultaneously extracts mean-pooled hidden states (embeddings) for downstream tasks.
-
-### 4. Quality Evaluation
--   **Comparison**: Compares the embeddings of the current quantized model against the `standard` (FP16) baseline.
--   **Metrics**:
-    -   **KL Divergence / Jensen-Shannon**: Measures how much the output distribution shifts.
-    -   **Cosine Similarity**: Measures directional fidelity of the embeddings.
-    -   **Signal-to-Noise Ratio (SNR)**: Quantifies the "noise" introduced by quantization.
-
-### 5. Downstream Binning (Clustering)
--   **Goal**: Can the quantized embeddings still distinguish between different species?
--   **Dimensionality Reduction**: UMAP projects high-dimensional embeddings (e.g., 3072d) to:
-    -   **10d** for DBSCAN clustering.
-    -   **2d** for visualization.
--   **Clustering**: DBSCAN clusters the sequences based on density.
--   **Validation**:
-    -   **ARI (Adjusted Rand Index)**: 1.0 = Perfect match with Ground Truth `genome_id`.
-    -   **Purity**: How "pure" each cluster is (percentage of dominant species).
--   **Visualization**: Generates side-by-side scatter plots (Predicted Clusters vs. True Species).
-
----
-
-## 🚀 Usage
-
-### 1. Install Dependencies
-```bash
-pip install torch transformers bitsandbytes scikit-learn pandas matplotlib seaborn umap-learn scipy
+Protocol B Dataset (Generation)
+Requires 100 species, 1 fragment per species, and 550,000 bp length each:
+```python
+df_result = sample_sequences_parallel(
+    directory='<GTDB dataset root>/GTDB/Bacteria/',
+    id_list=genome_ids, 
+    seqs_per_genome=1, 
+    seq_length=550000, 
+    n_species=100, 
+    seed=42
+)
+df_result.to_csv('generation_dataset.csv', index=False)
 ```
 
-### 2. Run Benchmark
+## 2. Protocol A: Embedding Benchmark
+Evaluates embedding extraction through PyTorch FBGEMM and tests the downstream representational fidelity via a DBSCAN species binning task.
+
 ```bash
-python benchmark/run_full_benchmark.py \
-    --csv path/to/dataset.csv \
-    --model DOEJGI/GenomeOcean-4B \
-    --device cuda \
-    --quant-modes standard 8bit 4bit_nf4 \
-    --max-tokens 5000 \
-    --batch-size 8 \
+python run_embedding_benchmark.py \
+    --csv "$BASE_DATA_DIR/embedding_dataset.csv" \
+    --model "DOEJGI/GenomeOcean-100M" \
+    --outdir "./results_final/protocol_A_100M_test" \
+    --quant-modes standard \
+    --loader native \
+    --max-tokens 1024 \
+    --subdivide-fragments 5000 \
     --umap-dim 10 \
-    --n-genomes 50 \
-    --n-fragments 100 \
-    --seed 42
+    --dbscan-eps 0.5 \
+    --dbscan-min-samples 5 \
+    --batch-size 256 \
+    --n-genomes 4 \
+    --n-fragments 10 \
+    --seed 42 \
+    --device cuda
 ```
 
-**Input CSV Requirements:**
-The dataset **must** contain the following headers:
--   `genome_id`: The ground truth label (e.g., `GCA_0000123.1`). Used for calculating ARI/Purity.
--   `fragment_id`: Unique identifier for each sequence (e.g., `GCA_0000123.1_0`).
--   `seq`: The actual DNA sequence string.
+## 3. Protocol B: Generation Benchmark
+Evaluates causal generation (next-token prediction) using vLLM for high-throughput decoding efficiency. Evaluates sequences over sliding-window chunks.
 
-### 3. HPC Submission
-Adjust the variables in `benchmark/run_benchmark.sh` and submit:
+Baseline & Protocol B.1 KV Cache Quantization
+Evaluates quality (Perplexity/NLL) across standard BFloat16 and B.1 FP8 KV Cache:
 ```bash
-# Parameters in shell script:
-# N_GENOMES=20      <-- Number of species to sample
-# N_FRAGMENTS=50    <-- Fragments per species
-# SEED=42           <-- Random seed for reproducibility
+export VLLM_ATTENTION_BACKEND=FLASH_ATTN
+export VLLM_FLASH_ATTN_VERSION=3
 
-sbatch benchmark/run_benchmark.sh
+python run_generation_benchmark.py \
+    --csv "$BASE_DATA_DIR/generation_dataset.csv" \
+    --model "DOEJGI/GenomeOcean-4B" \
+    --quant-modes bf16 fp8 \
+    --batch-sizes 48 96 \
+    --outdir ./results_final/generation_bench \
+    --n-genomes 100 \
+    --tokens-per-genome 102400 \
+    --context-len 10240 \
+    --stride 2560 \
+    --gen-len 2560 \
+    --precision bfloat16
 ```
 
-## 📊 Output Structure
+Extended Throughput Generation Measurement
+Repeats sequence operations to measure saturated generation throughput limits over fixed time windows:
+```bash
+export VLLM_ATTENTION_BACKEND=FLASH_ATTN
+export VLLM_FLASH_ATTN_VERSION=3
 
-Results are saved to timestamped directories, e.g., `results_full/run_20240101_120000/`:
+python run_generation_benchmark.py \
+    --csv "$BASE_DATA_DIR/generation_dataset.csv" \
+    --model "DOEJGI/GenomeOcean-4B" \
+    --quant-modes fp8 \
+    --batch-sizes 96 \
+    --outdir ./results_final/generation_bench \
+    --n-genomes 96 \
+    --tokens-per-genome 102400 \
+    --context-len 10240 \
+    --stride 2560 \
+    --gen-len 2560 \
+    --precision bfloat16 \
+    --n-repeats 5
+```
 
-| File/Folder | Content |
-|-------------|---------|
-| `performance_metrics.csv` | **Speed & Power**: `tokens_per_s`, `avg_power_W`, `tokens_per_watt`, `peak_vram_GB`. |
-| `binning_metrics.csv` | **Downstream Task**: `ARI`, `completeness`, `silhouette_score`, `n_clusters`. |
-| `quality/` | **Fidelity**: `quality_metrics.csv` (KL, Cosine vs Standard). |
-| `plots/{mode}/` | **Visuals**: `cluster_viz_predicted.png` (DBSCAN results) vs `cluster_viz_truth.png` (Species labels). |
+Protocol B.2 Dynamic W8A8 Quantization
+Utilizes the llm-compressor tool to produce a dynamically quantized W8A8 weight checkpoint with an excluded standard language modeling head:
+```bash
+python quantize_genomeocean_fp8.py --model "DOEJGI/GenomeOcean-4B"
+```
+
+Generates sequences and tracks evaluation perplexity utilizing the B.2 W8A8 quantization model:
+```bash
+python run_generation_benchmark.py \
+    --csv "$BASE_DATA_DIR/generation_dataset.csv" \
+    --model "DOEJGI/GenomeOcean-4B" \
+    --model-w8a8 "<path_to_quantized_model>/GenomeOcean-4B-B2-FP8-W8A8" \
+    --quant-modes fp8_v2 \
+    --batch-sizes 96 \
+    --outdir ./results_final/generation_bench_real_fp8 \
+    --n-genomes 96 \
+    --tokens-per-genome 102400 \
+    --context-len 10240 \
+    --stride 2560 \
+    --gen-len 2560 \
+    --precision bfloat16 \
+    --n-repeats 5
+```
