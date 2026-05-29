@@ -10,7 +10,7 @@ def plot_real_quantization(tensor_path="real_activations.pt"):
         return
 
     print(f"Loading activations from {tensor_path}...")
-    activations = torch.load(tensor_path)
+    activations = torch.load(tensor_path, weights_only=False)
     
     if len(activations) > 5_000_000:
         print(f"Tensor is very large ({len(activations)} values). Subsampling to 5M for plot rendering speed...")
@@ -23,8 +23,10 @@ def plot_real_quantization(tensor_path="real_activations.pt"):
     
     activations_f32 = activations.float()
     
-    # 2. INT8 Quantization (Dynamic Absmax)
-    # Standard dynamic W8A8 scales by the absolute maximum of the tensor/token.
+    # INT8 Quantization (Dynamic Global Absmax)
+    # NOTE: Real W8A8 computes scale per-layer or per-token. Here we use global
+    # absmax across all layers as a conservative approximation — it makes INT8
+    # look slightly *worse* than per-layer dynamic, which is the honest direction.
     int8_max_scale = activations_f32.abs().max() / 127.0
     int8_absmax_q = torch.clamp(torch.round(activations_f32 / int8_max_scale), -127, 127)
     int8_dq = (int8_absmax_q * int8_max_scale).to(torch.bfloat16)

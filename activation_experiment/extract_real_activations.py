@@ -1,5 +1,6 @@
 import torch
 from transformers import AutoModel, AutoTokenizer
+from tqdm import tqdm
 import argparse
 import random
 
@@ -16,8 +17,6 @@ def main():
     device_map = "auto" if args.device == "cuda" else None
     model = AutoModel.from_pretrained(args.model, torch_dtype=torch.bfloat16, trust_remote_code=True, device_map=device_map)
     model.eval()
-    
-    from tqdm import tqdm
     
     num_seqs = 5
     seq_len = 5000
