@@ -5,7 +5,7 @@ import random
 
 def main():
     parser = argparse.ArgumentParser(description="Extract real activations from a GenomeOcean model")
-    parser.add_argument("--model", type=str, default="jackyu03/genomeocean-100m", help="HuggingFace Model ID or local path (e.g. 'jackyu03/genomeocean-100m')")
+    parser.add_argument("--model", type=str, default="DOEJGI/GenomeOcean-100M", help="HuggingFace Model ID or local path (e.g. 'DOEJGI/GenomeOcean-100M')")
     parser.add_argument("--device", type=str, default="cuda", help="Device to run on (cuda or cpu)")
     args = parser.parse_args()
     
