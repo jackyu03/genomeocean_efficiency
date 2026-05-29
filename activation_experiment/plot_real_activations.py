@@ -36,9 +36,11 @@ def quantize_fp8_per_layer(activations_f32: torch.Tensor):
     return dq, scale
 
 def plot_layer(activations: torch.Tensor, layer_idx: int, outdir: Path):
-    """Generate and save the 3-panel comparison plot for a single layer."""
+    """Generate and save the 3-row × 2-col comparison plot for a single layer.
+    Left column: Full range (shows outliers). Right column: Zoomed into bulk region (shows precision).
+    """
     plt.style.use('seaborn-v0_8-whitegrid')
-    sns.set_context("paper", font_scale=1.2)
+    sns.set_context("paper", font_scale=1.1)
 
     # Subsample if huge (>5M values) for speed
     if len(activations) > 5_000_000:
@@ -47,9 +49,9 @@ def plot_layer(activations: torch.Tensor, layer_idx: int, outdir: Path):
 
     activations_f32 = activations.float()
 
-    # Per-layer quantization (the scientifically correct simulation)
+    # Per-layer quantization
     int8_dq, int8_scale = quantize_int8_per_layer(activations_f32)
-    fp8_dq, fp8_scale   = quantize_fp8_per_layer(activations_f32)
+    fp8_dq,  fp8_scale  = quantize_fp8_per_layer(activations_f32)
 
     # Per-layer errors
     int8_err = (activations_f32 - int8_dq.float()).abs()
@@ -57,34 +59,45 @@ def plot_layer(activations: torch.Tensor, layer_idx: int, outdir: Path):
         (activations_f32 - fp8_dq.float()).abs(), nan=0.0, posinf=0.0, neginf=0.0
     )
 
-    # Use full true range so outliers are visible on the plot
-    true_max = activations_f32.abs().max().item()
-    bulk_max = torch.quantile(activations_f32.abs(), 0.9999).item()
-    plot_max = true_max * 1.05
-    bins = np.linspace(-plot_max, plot_max, 300)
+    # --- Axis ranges ---
+    true_max  = activations_f32.abs().max().item()
+    bulk_max  = torch.quantile(activations_f32.abs(), 0.999).item()  # 99.9th pct for zoom window
 
-    fig, axes = plt.subplots(3, 1, figsize=(10, 9), sharex=True)
+    full_bins = np.linspace(-true_max * 1.05, true_max * 1.05, 200)   # Full range — shows outliers
+    zoom_bins = np.linspace(-bulk_max * 1.1,  bulk_max * 1.1,  300)   # Zoomed centre — high-def precision
 
     label = "Embedding Layer" if layer_idx == 0 else f"Transformer Layer {layer_idx}"
+    formats = [
+        ("BFloat16 (Reference)", activations_f32.numpy(), "gray",   None),
+        (f"INT8  MAE={int8_err.mean():.5f}  scale={int8_scale:.4f}", int8_dq.float().numpy(), "#E69B0E", int8_scale),
+        (f"FP8 E4M3  MAE={fp8_err.mean():.5f}  inv-scale={1/fp8_scale:.4f}", fp8_dq.float().numpy(), "#1B7A2E", None),
+    ]
 
-    # Panel 1: BF16 — mark the outlier location with a dashed line
-    axes[0].hist(activations_f32.numpy(), bins=bins, color='gray', density=True, log=True)
-    axes[0].axvline( true_max, color='red', linestyle='--', linewidth=1.2, label=f'Outlier max: {true_max:.1f}')
-    axes[0].axvline(-true_max, color='red', linestyle='--', linewidth=1.2)
-    axes[0].legend(fontsize=9, loc='upper right')
-    axes[0].set_title(f"{label} — BFloat16 Activations | Bulk: [{-bulk_max:.2f}, {bulk_max:.2f}] | True max: ±{true_max:.1f}", fontweight='bold')
+    fig, axes = plt.subplots(3, 2, figsize=(14, 10))
+    fig.suptitle(f"{label}  —  Full Range (left) vs. Bulk Region ±{bulk_max:.2f} (right)",
+                 fontweight='bold', fontsize=13)
 
-    # Panel 2: INT8
-    axes[1].hist(int8_dq.float().numpy(), bins=bins, color='orange', density=True, log=True)
-    axes[1].set_title(f"INT8 (Per-Layer Absmax Scale: {int8_scale:.4f})", fontweight='bold')
-    axes[1].text(0.05, 0.85, f"MAE: {int8_err.mean():.5f}", transform=axes[1].transAxes, fontsize=10)
+    for row, (title, data, color, _scale) in enumerate(formats):
+        # Left: full range
+        ax_l = axes[row, 0]
+        ax_l.hist(data, bins=full_bins, color=color, density=True, log=True)
+        ax_l.axvline( true_max, color='red', linestyle='--', linewidth=1.0, alpha=0.8)
+        ax_l.axvline(-true_max, color='red', linestyle='--', linewidth=1.0, alpha=0.8)
+        ax_l.set_title(title, fontsize=10, fontweight='bold')
+        if row == 2:
+            ax_l.set_xlabel("Activation Value")
+        ax_l.set_ylabel("Density (log)")
 
-    # Panel 3: FP8
-    axes[2].hist(fp8_dq.float().numpy(), bins=bins, color='green', density=True, log=True)
-    axes[2].set_title(f"FP8 E4M3 (Per-Layer Scale: {1/fp8_scale:.4f})", fontweight='bold')
-    axes[2].text(0.05, 0.85, f"MAE: {fp8_err.mean():.5f}", transform=axes[2].transAxes, fontsize=10)
+        # Right: zoomed bulk region
+        ax_r = axes[row, 1]
+        # Only keep values inside the zoom window for cleaner plot
+        mask = (torch.tensor(data).abs() <= bulk_max * 1.1)
+        zoomed_data = torch.tensor(data)[mask].numpy()
+        ax_r.hist(zoomed_data, bins=zoom_bins, color=color, density=True, log=True)
+        ax_r.set_title(f"Zoom: [{-bulk_max:.2f}, {bulk_max:.2f}]", fontsize=10)
+        if row == 2:
+            ax_r.set_xlabel("Activation Value")
 
-    plt.xlabel("Activation Value")
     plt.tight_layout()
 
     fname = outdir / f"layer_{layer_idx:03d}.png"
@@ -92,6 +105,7 @@ def plot_layer(activations: torch.Tensor, layer_idx: int, outdir: Path):
     plt.close(fig)
 
     return int8_err.mean().item(), fp8_err.mean().item()
+
 
 def main():
     import argparse
