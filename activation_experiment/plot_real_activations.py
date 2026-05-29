@@ -57,17 +57,22 @@ def plot_layer(activations: torch.Tensor, layer_idx: int, outdir: Path):
         (activations_f32 - fp8_dq.float()).abs(), nan=0.0, posinf=0.0, neginf=0.0
     )
 
-    # Bin range: 99.99th percentile to keep axis tight
-    plot_max = torch.quantile(activations_f32.abs(), 0.9999).item() * 1.5
-    bins = np.linspace(-plot_max, plot_max, 150)
+    # Use full true range so outliers are visible on the plot
+    true_max = activations_f32.abs().max().item()
+    bulk_max = torch.quantile(activations_f32.abs(), 0.9999).item()
+    plot_max = true_max * 1.05
+    bins = np.linspace(-plot_max, plot_max, 300)
 
     fig, axes = plt.subplots(3, 1, figsize=(10, 9), sharex=True)
 
     label = "Embedding Layer" if layer_idx == 0 else f"Transformer Layer {layer_idx}"
 
-    # Panel 1: BF16
+    # Panel 1: BF16 — mark the outlier location with a dashed line
     axes[0].hist(activations_f32.numpy(), bins=bins, color='gray', density=True, log=True)
-    axes[0].set_title(f"{label} — BFloat16 Activations (Log Scale)", fontweight='bold')
+    axes[0].axvline( true_max, color='red', linestyle='--', linewidth=1.2, label=f'Outlier max: {true_max:.1f}')
+    axes[0].axvline(-true_max, color='red', linestyle='--', linewidth=1.2)
+    axes[0].legend(fontsize=9, loc='upper right')
+    axes[0].set_title(f"{label} — BFloat16 Activations | Bulk: [{-bulk_max:.2f}, {bulk_max:.2f}] | True max: ±{true_max:.1f}", fontweight='bold')
 
     # Panel 2: INT8
     axes[1].hist(int8_dq.float().numpy(), bins=bins, color='orange', density=True, log=True)
