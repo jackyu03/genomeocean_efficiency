@@ -28,6 +28,11 @@ def main():
     for _ in tqdm(range(num_seqs), desc="Running forward passes"):
         seq = "".join(random.choices(['A', 'C', 'G', 'T'], k=seq_len))
         inputs = tokenizer(seq, return_tensors="pt")
+        
+        # Some tokenizers return token_type_ids, which Mistral (GenomeOcean) doesn't accept
+        if "token_type_ids" in inputs:
+            del inputs["token_type_ids"]
+            
         if args.device == "cuda":
             inputs = {k: v.to(args.device) for k, v in inputs.items()}
         
