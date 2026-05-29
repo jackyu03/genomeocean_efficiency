@@ -17,24 +17,32 @@ def main():
     model = AutoModel.from_pretrained(args.model, torch_dtype=torch.bfloat16, trust_remote_code=True, device_map=device_map)
     model.eval()
     
-    print("Generating a representative 5,000-bp DNA sequence...")
-    seq = "".join(random.choices(['A', 'C', 'G', 'T'], k=5000))
+    from tqdm import tqdm
     
-    inputs = tokenizer(seq, return_tensors="pt")
-    if args.device == "cuda":
-        inputs = {k: v.to(args.device) for k, v in inputs.items()}
+    num_seqs = 5
+    seq_len = 5000
+    print(f"Generating and processing {num_seqs} representative {seq_len}-bp DNA sequences...")
     
-    print("Running forward pass and extracting hidden states...")
-    with torch.no_grad():
-        # output_hidden_states=True intercepts the intermediate layers natively
-        outputs = model(**inputs, output_hidden_states=True)
+    all_activations = []
+    
+    for _ in tqdm(range(num_seqs), desc="Running forward passes"):
+        seq = "".join(random.choices(['A', 'C', 'G', 'T'], k=seq_len))
+        inputs = tokenizer(seq, return_tensors="pt")
+        if args.device == "cuda":
+            inputs = {k: v.to(args.device) for k, v in inputs.items()}
         
-    # Grab the final hidden state before the embedding pooling or lm_head
-    last_hidden_state = outputs.hidden_states[-1]
-    print(f"Captured activation tensor of shape: {last_hidden_state.shape} and dtype {last_hidden_state.dtype}")
-    
-    # Flatten it into a 1D array of values for the histogram
-    flattened = last_hidden_state.view(-1).cpu()
+        with torch.no_grad():
+            # output_hidden_states=True intercepts the intermediate layers natively
+            outputs = model(**inputs, output_hidden_states=True)
+            
+        # Grab the final hidden state before the embedding pooling or lm_head
+        last_hidden_state = outputs.hidden_states[-1]
+        all_activations.append(last_hidden_state.view(-1).cpu())
+        
+    print("Concatenating tensors...")
+    # Flatten into a 1D array of values for the histogram
+    flattened = torch.cat(all_activations)
+    print(f"Captured activation tensor of length {len(flattened)} and dtype {flattened.dtype}")
     
     out_file = "real_activations.pt"
     torch.save(flattened, out_file)
