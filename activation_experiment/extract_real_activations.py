@@ -38,7 +38,8 @@ def main():
         
         with torch.no_grad():
             # output_hidden_states=True intercepts the intermediate layers natively
-            outputs = model(**inputs, output_hidden_states=True)
+            # use_cache=False prevents HuggingFace from using DynamicCache, bypassing transformers version mismatches
+            outputs = model(**inputs, output_hidden_states=True, use_cache=False)
             
         # Grab the final hidden state before the embedding pooling or lm_head
         last_hidden_state = outputs.hidden_states[-1]
