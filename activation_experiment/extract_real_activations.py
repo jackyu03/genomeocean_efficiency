@@ -41,9 +41,9 @@ def main():
             # use_cache=False prevents HuggingFace from using DynamicCache, bypassing transformers version mismatches
             outputs = model(**inputs, output_hidden_states=True, use_cache=False)
             
-        # Grab the final hidden state before the embedding pooling or lm_head
-        last_hidden_state = outputs.hidden_states[-1]
-        all_activations.append(last_hidden_state.view(-1).cpu())
+        # Grab ALL hidden states across the entire network (embeddings + all intermediate layers)
+        for layer_tensor in outputs.hidden_states:
+            all_activations.append(layer_tensor.view(-1).cpu())
         
     print("Concatenating tensors...")
     # Flatten into a 1D array of values for the histogram
