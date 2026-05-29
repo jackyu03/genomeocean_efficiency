@@ -8,11 +8,11 @@ from pathlib import Path
 
 def main():
     parser = argparse.ArgumentParser(description="Extract real per-layer activations from a GenomeOcean model")
-    parser.add_argument("--model", type=str, default="DOEJGI/GenomeOcean-100M", help="HuggingFace Model ID or local path")
+    parser.add_argument("--model", type=str, default="DOEJGI/GenomeOcean-4B", help="HuggingFace Model ID or local path")
     parser.add_argument("--device", type=str, default="cuda", help="Device to run on (cuda or cpu)")
     parser.add_argument("--num-seqs", type=int, default=5, help="Number of random DNA sequences to run")
     parser.add_argument("--seq-len", type=int, default=5000, help="Length of each DNA sequence (bp)")
-    parser.add_argument("--outdir", type=str, default="layer_activations", help="Output directory for per-layer tensors")
+    parser.add_argument("--outdir", type=str, default="results/activation_experiment/layer_activations", help="Output directory for per-layer tensors")
     args = parser.parse_args()
 
     outdir = Path(args.outdir)

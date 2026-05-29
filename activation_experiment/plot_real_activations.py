@@ -61,7 +61,8 @@ def plot_layer(activations: torch.Tensor, layer_idx: int, outdir: Path):
 
     # --- Axis ranges ---
     true_max  = activations_f32.abs().max().item()
-    bulk_max  = torch.quantile(activations_f32.abs(), 0.999).item()  # 99.9th pct for zoom window
+    bulk_max_pct = 0.99
+    bulk_max  = torch.quantile(activations_f32.abs(), bulk_max_pct).item()  # 99th pct for zoom window
 
     full_bins = np.linspace(-true_max * 1.05, true_max * 1.05, 200)   # Full range — shows outliers
     zoom_bins = np.linspace(-bulk_max * 1.1,  bulk_max * 1.1,  300)   # Zoomed centre — high-def precision
@@ -74,8 +75,9 @@ def plot_layer(activations: torch.Tensor, layer_idx: int, outdir: Path):
     ]
 
     fig, axes = plt.subplots(3, 2, figsize=(14, 10))
-    fig.suptitle(f"{label}  —  Full Range (left) vs. Bulk Region ±{bulk_max:.2f} (right)",
-                 fontweight='bold', fontsize=13)
+    fig.suptitle(f"{label}  —  Full Range (left) vs. Bulk Region ±{bulk_max:.2f} (right)\n"
+                 f"Bulk Region represents the central {bulk_max_pct*100:.1f}% of activations (excluding extreme outliers)",
+                 fontweight='bold', fontsize=12)
 
     for row, (title, data, color, _scale) in enumerate(formats):
         # Left: full range
@@ -110,8 +112,8 @@ def plot_layer(activations: torch.Tensor, layer_idx: int, outdir: Path):
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Plot per-layer quantization distributions")
-    parser.add_argument("--indir",  type=str, default="layer_activations", help="Dir with layer_*.pt files from extract_real_activations.py")
-    parser.add_argument("--outdir", type=str, default="layer_plots",       help="Output dir for per-layer PNG plots")
+    parser.add_argument("--indir",  type=str, default="results/activation_experiment/layer_activations", help="Dir with layer_*.pt files from extract_real_activations.py")
+    parser.add_argument("--outdir", type=str, default="results/activation_experiment/layer_plots",       help="Output dir for per-layer PNG plots")
     args = parser.parse_args()
 
     indir  = Path(args.indir)
@@ -143,7 +145,7 @@ def main():
     ax.plot(x, all_fp8_mae,  color='green',  marker='s', markersize=4, label='FP8 E4M3 MAE')
     ax.set_xlabel("Layer Index (0 = Embedding)")
     ax.set_ylabel("Mean Absolute Error")
-    ax.set_title("Per-Layer Quantization Error: INT8 vs FP8 E4M3 (GenomeOcean-100M)", fontweight='bold')
+    ax.set_title("Per-Layer Quantization Error: INT8 vs FP8 E4M3 (GenomeOcean-4B)", fontweight='bold')
     ax.legend()
     plt.tight_layout()
     summary_path = outdir / "summary_mae_per_layer.png"
