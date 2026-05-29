@@ -29,10 +29,16 @@ def plot_real_quantization(tensor_path="real_activations.pt"):
     int8_absmax_q = torch.clamp(torch.round(activations_f32 / int8_max_scale), -127, 127)
     int8_dq = (int8_absmax_q * int8_max_scale).to(torch.bfloat16)
     
-    # 3. FP8 Quantization (E4M3)
+    # 3. FP8 Quantization (E4M3) with Dynamic Scaling
     try:
-        fp8_q = activations.to(torch.float8_e4m3fn)
-        fp8_dq = fp8_q.to(torch.bfloat16)
+        # Standard dynamic FP8 uses a scaling factor to stretch the tensor to the max representable E4M3 value (448.0)
+        fp8_max_val = 448.0
+        fp8_scale = fp8_max_val / activations_f32.abs().max()
+        
+        # Scale the activations -> cast to FP8 -> cast back to float32 -> Unscale -> cast to bfloat16
+        fp8_scaled = activations_f32 * fp8_scale
+        fp8_q = fp8_scaled.to(torch.float8_e4m3fn)
+        fp8_dq = (fp8_q.to(torch.float32) / fp8_scale).to(torch.bfloat16)
         
         if fp8_dq.isnan().any() or fp8_dq.isinf().any():
             print("Warning: Mac CPU produced NaNs during float8 conversion. Falling back to simulated.")
