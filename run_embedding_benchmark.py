@@ -307,6 +307,21 @@ def main():
             # A. Load Model
             model, tokenizer, config = load_model(args.model, args.device, dtype, loader_type=current_loader)
             
+            # --- PATCH FBGEMM FP8 FLATTEN BUG ---
+            if mode == "fp8":
+                log.info("Applying FBGEMM FP8 shape-preservation forward hooks...")
+                def unflatten_hook(module, inputs, output):
+                    x = inputs[0]
+                    if hasattr(output, "dim") and output.dim() == 2 and x.dim() == 3:
+                        return output.view(x.size(0), x.size(1), -1)
+                    return output
+
+                for module in model.modules():
+                    # Apply to FbgemmFp8Linear or any Linear layer just in case
+                    if "Linear" in module.__class__.__name__ or "Fp8" in module.__class__.__name__:
+                        module.register_forward_hook(unflatten_hook)
+            # ------------------------------------
+            
             # B. Run Inference (Perf + Embeddings)
             log.info(f"Running Inference & Performance Measurement (BS={args.batch_size})...")
             embeddings, perf = batch_process_and_measure(
