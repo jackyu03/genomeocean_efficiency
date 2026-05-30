@@ -35,6 +35,26 @@ def quantize_fp8_per_layer(activations_f32: torch.Tensor):
         dq = activations_f32.to(torch.bfloat16)
     return dq, scale
 
+def quantize_fp4_per_layer(activations_f32: torch.Tensor):
+    """
+    Simulate per-layer dynamic FP4 (E2M1).
+    Uses a standard FP4 lookup table normalized to [-1, 1].
+    """
+    scale = activations_f32.abs().max()
+    normalized = activations_f32 / scale
+    
+    fp4_vals = torch.tensor([
+        -1.0, -0.66666667, -0.5, -0.33333333, -0.25, -0.16666667, -0.08333333, 0.0,
+        0.08333333, 0.16666667, 0.25, 0.33333333, 0.5, 0.66666667, 1.0
+    ], device=activations_f32.device)
+    
+    # Broadcast subtraction to find nearest value (N, 1) - (1, 15)
+    idx = torch.abs(normalized.unsqueeze(-1) - fp4_vals).argmin(dim=-1)
+    quantized_normalized = fp4_vals[idx]
+    
+    dq = (quantized_normalized * scale).to(torch.bfloat16)
+    return dq, scale
+
 def plot_layer(activations: torch.Tensor, layer_idx: int, outdir: Path):
     """Generate and save the 3-row × 2-col comparison plot for a single layer.
     Left column: Full range (shows outliers). Right column: Zoomed into bulk region (shows precision).
@@ -52,16 +72,18 @@ def plot_layer(activations: torch.Tensor, layer_idx: int, outdir: Path):
     # Per-layer quantization
     int8_dq, int8_scale = quantize_int8_per_layer(activations_f32)
     fp8_dq,  fp8_scale  = quantize_fp8_per_layer(activations_f32)
+    fp4_dq,  fp4_scale  = quantize_fp4_per_layer(activations_f32)
 
     # Per-layer errors
     int8_err = (activations_f32 - int8_dq.float()).abs()
     fp8_err  = torch.nan_to_num(
         (activations_f32 - fp8_dq.float()).abs(), nan=0.0, posinf=0.0, neginf=0.0
     )
+    fp4_err  = (activations_f32 - fp4_dq.float()).abs()
 
     # --- Axis ranges ---
     true_max  = activations_f32.abs().max().item()
-    bulk_max_pct = 0.99
+    bulk_max_pct = 0.9999
     bulk_max  = torch.quantile(activations_f32.abs(), bulk_max_pct).item()  # 99th pct for zoom window
 
     full_bins = np.linspace(-true_max * 1.05, true_max * 1.05, 200)   # Full range — shows outliers
@@ -71,12 +93,13 @@ def plot_layer(activations: torch.Tensor, layer_idx: int, outdir: Path):
     formats = [
         ("BFloat16 (Reference)", activations_f32.numpy(), "gray",   None),
         (f"INT8  MAE={int8_err.mean():.5f}  scale={int8_scale:.4f}", int8_dq.float().numpy(), "#E69B0E", int8_scale),
-        (f"FP8 E4M3  MAE={fp8_err.mean():.5f}  inv-scale={1/fp8_scale:.4f}", fp8_dq.float().numpy(), "#1B7A2E", None),
+        (f"FP8 E4M3  MAE={fp8_err.mean():.5f}  scale={1/fp8_scale:.4f}", fp8_dq.float().numpy(), "#1B7A2E", None),
+        (f"FP4 E2M1  MAE={fp4_err.mean():.5f}  scale={fp4_scale:.4f}", fp4_dq.float().numpy(), "#9B2E8E", fp4_scale),
     ]
 
-    fig, axes = plt.subplots(3, 2, figsize=(14, 10))
+    fig, axes = plt.subplots(4, 2, figsize=(14, 13))
     fig.suptitle(f"{label}  —  Full Range (left) vs. Bulk Region ±{bulk_max:.2f} (right)\n"
-                 f"Bulk Region represents the central {bulk_max_pct*100:.1f}% of activations (excluding extreme outliers)",
+                 f"Bulk Region represents the central {bulk_max_pct*100:.2f}% of activations (excluding extreme outliers)",
                  fontweight='bold', fontsize=12)
 
     for row, (title, data, color, _scale) in enumerate(formats):
@@ -86,7 +109,7 @@ def plot_layer(activations: torch.Tensor, layer_idx: int, outdir: Path):
         ax_l.axvline( true_max, color='red', linestyle='--', linewidth=1.0, alpha=0.8)
         ax_l.axvline(-true_max, color='red', linestyle='--', linewidth=1.0, alpha=0.8)
         ax_l.set_title(title, fontsize=10, fontweight='bold')
-        if row == 2:
+        if row == 3:
             ax_l.set_xlabel("Activation Value")
         ax_l.set_ylabel("Density (log)")
 
@@ -97,7 +120,7 @@ def plot_layer(activations: torch.Tensor, layer_idx: int, outdir: Path):
         zoomed_data = torch.tensor(data)[mask].numpy()
         ax_r.hist(zoomed_data, bins=zoom_bins, color=color, density=True, log=True)
         ax_r.set_title(f"Zoom: [{-bulk_max:.2f}, {bulk_max:.2f}]", fontsize=10)
-        if row == 2:
+        if row == 3:
             ax_r.set_xlabel("Activation Value")
 
     plt.tight_layout()
@@ -106,7 +129,7 @@ def plot_layer(activations: torch.Tensor, layer_idx: int, outdir: Path):
     plt.savefig(fname, dpi=200, bbox_inches='tight')
     plt.close(fig)
 
-    return int8_err.mean().item(), fp8_err.mean().item()
+    return int8_err.mean().item(), fp8_err.mean().item(), fp4_err.mean().item()
 
 
 def main():
@@ -129,13 +152,15 @@ def main():
 
     all_int8_mae = []
     all_fp8_mae  = []
+    all_fp4_mae  = []
 
     for fpath in tqdm(layer_files, desc="Plotting layers"):
         layer_idx = int(fpath.stem.split("_")[1])
         activations = torch.load(fpath, weights_only=False)
-        int8_mae, fp8_mae = plot_layer(activations, layer_idx, outdir)
+        int8_mae, fp8_mae, fp4_mae = plot_layer(activations, layer_idx, outdir)
         all_int8_mae.append(int8_mae)
         all_fp8_mae.append(fp8_mae)
+        all_fp4_mae.append(fp4_mae)
 
     # Summary plot: MAE per layer
     print("Generating MAE summary plot...")
@@ -143,6 +168,7 @@ def main():
     x = range(len(all_int8_mae))
     ax.plot(x, all_int8_mae, color='orange', marker='o', markersize=4, label='INT8 MAE')
     ax.plot(x, all_fp8_mae,  color='green',  marker='s', markersize=4, label='FP8 E4M3 MAE')
+    ax.plot(x, all_fp4_mae,  color='purple', marker='^', markersize=4, label='FP4 E2M1 MAE')
     ax.set_xlabel("Layer Index (0 = Embedding)")
     ax.set_ylabel("Mean Absolute Error")
     ax.set_title("Per-Layer Quantization Error: INT8 vs FP8 E4M3 (GenomeOcean-4B)", fontweight='bold')
@@ -155,6 +181,7 @@ def main():
     print(f"\nAll done! Saved {len(layer_files)} layer plots + summary to '{outdir}/'")
     print(f"Average INT8 MAE across all layers: {np.mean(all_int8_mae):.5f}")
     print(f"Average FP8  MAE across all layers: {np.mean(all_fp8_mae):.5f}")
+    print(f"Average FP4  MAE across all layers: {np.mean(all_fp4_mae):.5f}")
 
 if __name__ == "__main__":
     main()
