@@ -222,7 +222,11 @@ def main():
                 return group.sample(n=args.n_fragments, random_state=args.seed)
             return group
 
-        df = df.groupby("genome_id", group_keys=False).apply(sample_fragments)
+        # Bypass Pandas 3.0 .apply() breaking changes
+        df_list = []
+        for _, group in df.groupby("genome_id"):
+            df_list.append(sample_fragments(group))
+        df = pd.concat(df_list, ignore_index=True)
         log.info(f"Total sequences after fragment subsampling: {len(df)}")
         log.info(f"Dataset shape: {df.shape}")
         avg_len_chars = df["seq"].str.len().mean()
