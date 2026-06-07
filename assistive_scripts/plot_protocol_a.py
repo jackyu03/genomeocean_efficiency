@@ -4,6 +4,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import matplotlib.patches as mpatches
+import urllib.request
+from urllib.error import HTTPError
+import json
+import ssl
+import time
 
 # Hardcoded dictionary based on GTDB NCBI Entrez API query
 # This provides biological strain-level names without requiring an internet connection.
@@ -29,6 +34,58 @@ GTDB_TO_SPECIES = {
     "GCA_025963165.1": "Mycobacterium sp.",
     "GCF_030016275.1": "Streptomyces coelicoflavus str. S3018",
 }
+
+def fetch_with_retry(acc):
+    """Fallback NCBI Entrez lookup with retries for accessions not in the dictionary."""
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    retries = 3
+    for attempt in range(retries):
+        try:
+            search_url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=assembly&term={acc}&retmode=json"
+            with urllib.request.urlopen(search_url, context=ctx) as response:
+                data = json.loads(response.read().decode())
+                
+            if not data["esearchresult"]["idlist"]:
+                acc_base = acc.split('.')[0]
+                search_url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=assembly&term={acc_base}&retmode=json"
+                with urllib.request.urlopen(search_url, context=ctx) as response:
+                    data = json.loads(response.read().decode())
+                    
+            if not data["esearchresult"]["idlist"]:
+                return acc
+                
+            uid = data["esearchresult"]["idlist"][0]
+            time.sleep(0.5)
+            
+            summary_url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=assembly&id={uid}&retmode=json"
+            with urllib.request.urlopen(summary_url, context=ctx) as response:
+                data2 = json.loads(response.read().decode())
+                
+            species = data2["result"][uid].get("speciesname", "")
+            strain = ""
+            biosource = data2["result"][uid].get("biosource", {})
+            for infra in biosource.get("infraspecieslist", []):
+                if infra.get("sub_type") == "strain":
+                    strain = infra.get("sub_value", "")
+                    break
+            
+            if species and strain:
+                return f"{species} str. {strain}"
+            return species if species else acc
+
+        except HTTPError as e:
+            if e.code == 429:
+                print(f"  [429] Rate limited on {acc}, waiting 5 seconds... (Attempt {attempt+1}/{retries})")
+                time.sleep(5)
+            else:
+                return acc
+        except Exception as e:
+            print(f"  Error on {acc}: {e}")
+            return acc
+            
+    return acc
 
 def plot_protocol_a_grid(dir_100m, dir_4b, output_path):
     """
@@ -62,7 +119,13 @@ def plot_protocol_a_grid(dir_100m, dir_4b, output_path):
     # Use the hardcoded dictionary or fallback
     name_mapping = {}
     for acc in sorted(list(all_accessions)):
-        name_mapping[acc] = GTDB_TO_SPECIES.get(acc, acc)
+        if acc in GTDB_TO_SPECIES:
+            name_mapping[acc] = GTDB_TO_SPECIES[acc]
+        else:
+            print(f"Accession {acc} not in hardcoded dictionary. Fetching from NCBI...")
+            name_mapping[acc] = fetch_with_retry(acc)
+            # Sleep 1.5s to respect rate limits if we have to fetch multiple
+            time.sleep(1.5)
 
     n_species = len(all_accessions)
     palette = sns.color_palette("tab20", n_species)
