@@ -157,11 +157,11 @@ def main():
     parser.add_argument("--subdivide-fragments", type=int, default=None, help="Length to subdivide long fragments into (bp). Discards remainder.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for sampling")
     
-    # Binning Params
     parser.add_argument("--umap-dim", type=int, default=10)
     parser.add_argument("--loader", type=str, default="native", choices=["native", "bitsandbytes"], help="Model Loader Type")
     parser.add_argument("--dbscan-eps", type=float, default=0.5)
     parser.add_argument("--dbscan-min-samples", type=int, default=5)
+    parser.add_argument("--cache-embeddings", action="store_true", help="Cache the raw, high-dimensional embeddings to disk.")
 
     args = parser.parse_args()
     
@@ -327,6 +327,12 @@ def main():
             embeddings, perf = batch_process_and_measure(
                 model, input_ids_all, attention_mask_all, args.device, args.batch_size
             )
+            
+            # Save raw embeddings if requested
+            if args.cache_embeddings:
+                cache_path = outdir / f"cached_embeddings_{mode}.npz"
+                np.savez(cache_path, **embeddings)
+                log.info(f"Cached raw high-dimensional embeddings to {cache_path}")
             
             # Save Perf
             perf["quantization"] = mode

@@ -6,8 +6,6 @@ Implements UMAP reduction, DBSCAN clustering, Visualization, and Metrics.
 import numpy as np
 import pandas as pd
 import logging
-import matplotlib.pyplot as plt
-import seaborn as sns
 from typing import Dict, List, Optional
 from sklearn.cluster import DBSCAN, KMeans
 from sklearn.metrics import adjusted_rand_score, homogeneity_score, completeness_score, v_measure_score, silhouette_score
@@ -22,54 +20,6 @@ except ImportError:
     UMAP_AVAILABLE = False
 
 log = logging.getLogger(__name__)
-
-def plot_clusters(embeddings_2d: np.ndarray, 
-                 labels: List, 
-                 title: str,
-                 subtitle: str,
-                 output_path: str,
-                 color_map: Optional[Dict] = None):
-    """
-    Generates a scatter plot of the 2D embeddings.
-    """
-    plt.figure(figsize=(6, 5))
-    
-    # Use seaborn for better handling of categorical labels/colors
-    # Convert labels to string if they are numbers to ensure discrete palette
-    labels_str = [str(x) for x in labels]
-    
-    n_unique = len(set(labels))
-    
-    if color_map:
-        # If color_map is provided, ensure all labels are in it (mostly for Ground Truth)
-        # For predicted clusters (-1, 0, 1...), we might not have a map, so fall back
-        if all(L in color_map for L in set(labels)):
-            palette = color_map
-        else:
-            palette = sns.color_palette("tab10", n_unique) if n_unique <= 10 else "viridis"
-    else:
-        palette = sns.color_palette("tab10", n_unique) if n_unique <= 10 else "viridis"
-    
-    sns.scatterplot(
-        x=embeddings_2d[:, 0],
-        y=embeddings_2d[:, 1],
-        hue=labels_str,
-        palette=palette,
-        s=10,
-        alpha=0.7,
-        legend="full" if n_unique < 100 else False # Hide legend if too many classes
-    )
-    
-    # Move legend outside of plot
-    if n_unique < 100:
-        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
-    
-    plt.suptitle(title, fontsize=10, fontweight='bold', y=0.96)
-    plt.title(subtitle, fontsize=9)
-    # plt.tight_layout() # tight_layout can sometimes mess up suptitle position
-    plt.subplots_adjust(top=0.88, right=0.75) # make room for legend and title
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    plt.close()
 
 def run_binning_eval(embeddings: np.ndarray, 
                     genome_ids: List[str], 
@@ -160,23 +110,12 @@ def run_binning_eval(embeddings: np.ndarray,
     # 4. Visualization (Always use the 2D projection)
     if emb_2d is not None and output_dir:
         import os
-        model_name = kwargs.get("model_name", "Unknown Model")
-        quant_mode = kwargs.get("quant_mode", "unknown")
-        color_map = kwargs.get("color_map", None)
-        
-        # Plot Prediction
-        plot_clusters(emb_2d, labels_pred, 
-                     title=f"{model_name} ({quant_mode})",
-                     subtitle=f"Predicted Clusters (ARI={ari:.2f})",
-                     output_path=os.path.join(output_dir, "cluster_viz_predicted.png"))
-        
-        # Plot Ground Truth
-        # Use color_map if available for consistent species colors
-        plot_clusters(emb_2d, genome_ids, 
-                     title=f"{model_name} ({quant_mode})",
-                     subtitle=f"Ground Truth Species (ARI={ari:.2f})",
-                     output_path=os.path.join(output_dir, "cluster_viz_truth.png"),
-                     color_map=color_map)
+        # Save data for unified grid plotting
+        np.savez(os.path.join(output_dir, "cluster_data.npz"),
+                 emb_2d=emb_2d,
+                 labels_pred=labels_pred,
+                 genome_ids=genome_ids,
+                 ari=ari)
         
     log.info(f"Metrics: ARI={ari:.3f}, Purity={avg_purity:.3f}, Sil={sil:.3f}, Noise={n_noise}")
     
