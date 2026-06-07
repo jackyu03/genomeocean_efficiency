@@ -87,7 +87,7 @@ def fetch_with_retry(acc):
             
     return acc
 
-def plot_protocol_a_grid(dir_100m, dir_4b, output_path):
+def plot_protocol_a_grid(dir_100m, dir_4b, output_path, flip_100m_y=False, flip_4b_x=False, flip_4b_y=False):
     """
     Plots a 2x2 grid showing Ground Truth species clusters:
     Rows: BF16, FP8
@@ -108,7 +108,8 @@ def plot_protocol_a_grid(dir_100m, dir_4b, output_path):
             d = np.load(path, allow_pickle=True)
             data[key] = {
                 'emb_2d': d['emb_2d'],
-                'genome_ids': d['genome_ids']
+                'genome_ids': d['genome_ids'],
+                'ari': float(d['ari'])
             }
             all_accessions.update(d['genome_ids'])
         else:
@@ -143,7 +144,17 @@ def plot_protocol_a_grid(dir_100m, dir_4b, output_path):
     ax_legend.axis('off')
     
     def draw_scatter(ax, key):
-        emb = data[key]['emb_2d']
+        emb = data[key]['emb_2d'].copy()
+        
+        # Apply visual alignment (flips/mirrors) since UMAP is rotationally/reflectionally invariant
+        if key == ("100M", "fp8") and flip_100m_y:
+            emb[:, 1] = -emb[:, 1]  # Flip upside down
+        elif key == ("4B", "fp8"):
+            if flip_4b_x:
+                emb[:, 0] = -emb[:, 0]  # Mirror left/right
+            if flip_4b_y:
+                emb[:, 1] = -emb[:, 1]  # Flip upside down
+            
         labels = data[key]['genome_ids']
         
         for acc in sorted(list(all_accessions)):
@@ -153,6 +164,11 @@ def plot_protocol_a_grid(dir_100m, dir_4b, output_path):
                 
         ax.set_xticks([])
         ax.set_yticks([])
+        
+        # Add ARI text
+        ari = data[key]['ari']
+        ax.text(0.98, 0.98, f"ARI: {ari:.3f}", transform=ax.transAxes, ha='right', va='top', 
+                fontsize=11, bbox=dict(facecolor='white', alpha=0.8, edgecolor='none', pad=2))
         
     draw_scatter(ax_100_bf16, ("100M", "bf16"))
     draw_scatter(ax_4b_bf16,  ("4B", "bf16"))
@@ -190,7 +206,10 @@ if __name__ == "__main__":
     parser.add_argument("--100m-dir", type=str, required=True, help="Path to the 100M output folder (e.g., results/new/protocol_A_100M_seed_42)")
     parser.add_argument("--4b-dir", type=str, required=True, help="Path to the 4B output folder (e.g., results/new/protocol_A_4B_seed_42)")
     parser.add_argument("--output", type=str, default="figures/genomeocean_protocol_A_grid.png")
+    parser.add_argument("--flip-100m-fp8-y", action="store_true", help="Flip Y-axis for 100M FP8 UMAP")
+    parser.add_argument("--flip-4b-fp8-x", action="store_true", help="Mirror X-axis for 4B FP8 UMAP")
+    parser.add_argument("--flip-4b-fp8-y", action="store_true", help="Flip Y-axis for 4B FP8 UMAP")
     args = parser.parse_args()
     
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
-    plot_protocol_a_grid(getattr(args, '100m_dir'), getattr(args, '4b_dir'), args.output)
+    plot_protocol_a_grid(getattr(args, '100m_dir'), getattr(args, '4b_dir'), args.output, args.flip_100m_fp8_y, args.flip_4b_fp8_x, args.flip_4b_fp8_y)
