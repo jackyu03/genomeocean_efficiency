@@ -44,7 +44,6 @@ python run_tpot_context_experiment.py \
     --prompt-len $PROMPT_LEN \
     --gen-len $GEN_LEN \
     --precision bf16 \
-    --attn-impl flash_attention_2 \
     --profile
 
 echo "=== All experiments complete. Check results_tpot_vllm/ and results_tpot/! ==="
