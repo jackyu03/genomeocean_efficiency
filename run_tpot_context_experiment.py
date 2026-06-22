@@ -178,10 +178,21 @@ def main():
     if args.attn_impl:
         log.info(f"Forcing attention implementation: {args.attn_impl}")
         from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+        
+        quantization_config = None
+        if args.precision == "fp8":
+            try:
+                from transformers import FbgemmFp8Config
+                quantization_config = FbgemmFp8Config(quant_method="fbgemm_fp8")
+                log.info("Loading model with Native Hugging Face FP8 Weights (FbgemmFp8Config)...")
+            except ImportError:
+                log.error("FbgemmFp8Config not available.")
+                
         tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
         model = AutoModelForCausalLM.from_pretrained(
             args.model,
             torch_dtype=torch.bfloat16,
+            quantization_config=quantization_config,
             device_map="auto" if args.device == "cuda" else None,
             trust_remote_code=True,
             attn_implementation=args.attn_impl
