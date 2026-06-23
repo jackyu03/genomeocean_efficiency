@@ -48,14 +48,14 @@ async def consume_stream(gen, context_len):
         step += 1
     return step_records
 
-async def run_vllm_experiment(engine, prompt_ids_list, gen_len, batch_size, profile=False):
+async def run_vllm_experiment(engine, prompt_ids_list, gen_len, batch_size, outdir, profile=False, rep_idx=1):
     sampling_params = SamplingParams(max_tokens=gen_len, temperature=0.0, ignore_eos=True)
     context_len = len(prompt_ids_list[0])
     log.info(f"Starting vLLM generation: Batch Size = {batch_size}, Prefix = {context_len}, Gen = {gen_len}")
     
     generators = []
     for i in range(batch_size):
-        gen = engine.generate({"prompt_token_ids": prompt_ids_list[i]}, sampling_params, f"req_{i}")
+        gen = engine.generate({"prompt_token_ids": prompt_ids_list[i]}, sampling_params, f"req_rep{rep_idx}_{i}")
         generators.append(gen)
         
     tasks = [consume_stream(g, context_len) for g in generators]
@@ -71,8 +71,8 @@ async def run_vllm_experiment(engine, prompt_ids_list, gen_len, batch_size, prof
             all_records = await asyncio.gather(*tasks)
             
         log.info("Saving profiler traces...")
-        prof.export_chrome_trace("results_tpot_vllm/kernel_trace_vllm.json")
-        with open("results_tpot_vllm/profiler_summary_vllm.txt", "w") as f:
+        prof.export_chrome_trace(str(outdir / f"kernel_trace_vllm_rep{rep_idx}.json"))
+        with open(outdir / f"profiler_summary_vllm_rep{rep_idx}.txt", "w") as f:
             f.write(prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=30))
     else:
         all_records = await asyncio.gather(*tasks)
@@ -104,6 +104,7 @@ def main():
     parser.add_argument("--gen-len", type=int, default=9216, help="Number of new tokens to generate")
     parser.add_argument("--precision", type=str, default="bf16", help="Precision: bf16 or fp8")
     parser.add_argument("--batch-size", type=int, default=1, help="Batch size")
+    parser.add_argument("--repeats", type=int, default=5, help="Number of times to repeat the experiment to average")
     parser.add_argument("--profile", action="store_true", help="Enable torch.profiler")
     
     args = parser.parse_args()
@@ -150,51 +151,74 @@ def main():
     
     engine = AsyncLLMEngine.from_engine_args(engine_args)
     
-    # Run
-    log.info(f"Starting experiment: Precision = {args.precision} (KV Cache = {kv_cache_dtype})")
-    
     loop = asyncio.get_event_loop()
-    records, prefill_latency = loop.run_until_complete(
-        run_vllm_experiment(engine, prompt_ids_list, args.gen_len, args.batch_size, args.profile)
-    )
+    all_repeats_dfs = []
+    prefill_latencies = []
     
-    # Save Results
-    if records:
-        df_results = pd.DataFrame(records)
-        df_results["batch_size"] = args.batch_size
-        df_results["precision"] = args.precision
-        df_results["model"] = args.model
+    for rep in range(1, args.repeats + 1):
+        log.info(f"--- Starting Repeat {rep}/{args.repeats} ---")
+        records, prefill_latency = loop.run_until_complete(
+            run_vllm_experiment(engine, prompt_ids_list, args.gen_len, args.batch_size, outdir, args.profile, rep)
+        )
         
-        save_path = outdir / "tpot_context_latency.csv"
-        df_results.to_csv(save_path, index=False)
-        log.info(f"TPOT vs Context results saved to {save_path}")
-        
-        import json
-        summary_info = {
-            "model": args.model,
-            "precision": args.precision,
-            "batch_size": args.batch_size,
-            "kv_cache_dtype": kv_cache_dtype,
-            "seed_prompt_length": args.prompt_len,
-            "generated_tokens": args.gen_len,
-            "prefill_latency_ms": prefill_latency,
-            "avg_tpot_latency_ms": df_results["latency_ms"].mean()
-        }
-        with open(outdir / "experiment_summary.json", "w") as f:
-            json.dump(summary_info, f, indent=4)
+        if records:
+            prefill_latencies.append(prefill_latency)
+            df_rep = pd.DataFrame(records)
+            df_rep["batch_size"] = args.batch_size
+            df_rep["precision"] = args.precision
+            df_rep["model"] = args.model
+            df_rep["repeat"] = rep
             
-        # Plot
-        log.info("Generating plot...")
-        plt.figure(figsize=(10, 6))
+            save_path = outdir / f"tpot_context_latency_rep{rep}.csv"
+            df_rep.to_csv(save_path, index=False)
+            all_repeats_dfs.append(df_rep)
+            log.info(f"Saved repeat {rep} to {save_path}")
+            
+    if not all_repeats_dfs:
+        log.error("No data collected across any repeats.")
+        return
         
-        plot_df = df_results[df_results['step'] > 1]
+    # Calculate Average
+    log.info("Calculating averages across all repeats...")
+    df_combined = pd.concat(all_repeats_dfs, ignore_index=True)
+    
+    # Group by step and effective_context_length to compute the mean latency
+    df_avg = df_combined.groupby(['step', 'effective_context_length'], as_index=False)['latency_ms'].mean()
+    df_avg["batch_size"] = args.batch_size
+    df_avg["precision"] = args.precision
+    df_avg["model"] = args.model
+    
+    avg_save_path = outdir / "tpot_context_latency_avg.csv"
+    df_avg.to_csv(avg_save_path, index=False)
+    log.info(f"Averaged results saved to {avg_save_path}")
+    
+    import json
+    summary_info = {
+        "model": args.model,
+        "precision": args.precision,
+        "batch_size": args.batch_size,
+        "repeats": args.repeats,
+        "kv_cache_dtype": kv_cache_dtype,
+        "seed_prompt_length": args.prompt_len,
+        "generated_tokens": args.gen_len,
+        "avg_prefill_latency_ms": sum(prefill_latencies)/len(prefill_latencies) if prefill_latencies else 0.0,
+        "overall_avg_tpot_latency_ms": df_avg["latency_ms"].mean()
+    }
+    with open(outdir / "experiment_summary.json", "w") as f:
+        json.dump(summary_info, f, indent=4)
         
-        plt.plot(plot_df['effective_context_length'], plot_df['latency_ms'], color='tab:red', label='Latency')
-        plt.xlabel('Effective Context Length (Tokens)')
-        plt.ylabel('Latency Per Token (ms)')
-        plt.title(f'vLLM TPOT vs Context Length\n(Model: {args.model}, Batch: {args.batch_size}, KV: {kv_cache_dtype})')
-        plt.tight_layout()
-        plt.savefig(outdir / "tpot_vs_context_vllm.png", dpi=300)
+    # Plot Average
+    log.info("Generating averaged plot...")
+    plt.figure(figsize=(10, 6))
+    
+    plot_df = df_avg[df_avg['step'] > 1]
+    
+    plt.plot(plot_df['effective_context_length'], plot_df['latency_ms'], color='tab:red', label='Average Latency')
+    plt.xlabel('Effective Context Length (Tokens)')
+    plt.ylabel('Latency Per Token (ms)')
+    plt.title(f'vLLM TPOT vs Context Length (Averaged over {args.repeats} runs)\n(Model: {args.model}, Batch: {args.batch_size}, KV: {kv_cache_dtype})')
+    plt.tight_layout()
+    plt.savefig(outdir / "tpot_vs_context_vllm_avg.png", dpi=300)
         
 if __name__ == "__main__":
     main()
