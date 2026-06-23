@@ -10,8 +10,8 @@
 
 DATA_CSV="generation_dataset.csv"
 MODEL="DOEJGI/GenomeOcean-4B"
-PROMPT_LEN=625
-GEN_LEN=2000
+PROMPT_LEN=1024
+GEN_LEN=9216
 
 echo "=== Starting TPOT vs Context Experiments for Paper ==="
 
@@ -33,10 +33,10 @@ python run_tpot_vllm_experiment.py \
     --gen-len $GEN_LEN \
     --precision fp8
 
-# 3. Batched Scaling via Native PyTorch
+# 3. Batched Scaling via vLLM
 # (Shows linear KV memory traffic vs quadratic compute)
-echo "Running Native PyTorch BF16, Batch Size 16..."
-python run_tpot_context_experiment.py \
+echo "Running vLLM BF16, Batch Size 16..."
+python run_tpot_vllm_experiment.py \
     --csv "$DATA_CSV" \
     --model "$MODEL" \
     --batch-size 16 \
@@ -44,8 +44,8 @@ python run_tpot_context_experiment.py \
     --gen-len $GEN_LEN \
     --precision bf16
 
-echo "Running Native PyTorch BF16, Batch Size 32..."
-python run_tpot_context_experiment.py \
+echo "Running vLLM BF16, Batch Size 32..."
+python run_tpot_vllm_experiment.py \
     --csv "$DATA_CSV" \
     --model "$MODEL" \
     --batch-size 32 \
@@ -53,17 +53,15 @@ python run_tpot_context_experiment.py \
     --gen-len $GEN_LEN \
     --precision bf16
 
-# 4. Kernel Profiling Run (To prove H100 Flash Attention utilization)
-# We use the NATIVE PyTorch script here because vLLM's background scheduler 
-# makes raw kernel Chrome tracing extremely noisy and hard to read.
-echo "Running Profiling Trace (BF16)..."
-python run_tpot_context_experiment.py \
+# 4. Kernel Profiling Run (via vLLM)
+echo "Running Profiling Trace (vLLM BF16)..."
+python run_tpot_vllm_experiment.py \
     --csv "$DATA_CSV" \
     --model "$MODEL" \
     --batch-size 1 \
     --prompt-len $PROMPT_LEN \
-    --gen-len $GEN_LEN \
+    --gen-len 100 \
     --precision bf16 \
     --profile
 
-echo "=== All experiments complete. Check results_tpot_vllm/ and results_tpot/! ==="
+echo "=== All experiments complete. Check results_tpot_vllm/! ==="

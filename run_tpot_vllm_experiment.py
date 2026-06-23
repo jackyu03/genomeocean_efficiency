@@ -25,79 +25,86 @@ from vllm import AsyncLLMEngine, AsyncEngineArgs, SamplingParams
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 log = logging.getLogger("tpot_vllm_bench")
 
-async def run_vllm_experiment(engine, prompt_ids, gen_len, batch_size):
-    """
-    Run vLLM generation and measure latency for every single token yielded.
-    """
-    sampling_params = SamplingParams(
-        max_tokens=gen_len,
-        temperature=0.0,
-        ignore_eos=True
-    )
-    
-    context_len = len(prompt_ids[0])
+import torch
+
+async def consume_stream(gen, context_len):
+    step_records = []
+    step = 0
+    last_time = time.perf_counter()
+    async for request_output in gen:
+        current_time = time.perf_counter()
+        latency_ms = (current_time - last_time) * 1000.0
+        
+        output_tokens_count = len(request_output.outputs[0].token_ids)
+        current_ctx_len = context_len + output_tokens_count
+        
+        step_records.append({
+            "step": step,
+            "effective_context_length": current_ctx_len,
+            "latency_ms": latency_ms
+        })
+            
+        last_time = current_time
+        step += 1
+    return step_records
+
+async def run_vllm_experiment(engine, prompt_ids_list, gen_len, batch_size, profile=False):
+    sampling_params = SamplingParams(max_tokens=gen_len, temperature=0.0, ignore_eos=True)
+    context_len = len(prompt_ids_list[0])
     log.info(f"Starting vLLM generation: Batch Size = {batch_size}, Prefix = {context_len}, Gen = {gen_len}")
     
-    # We must submit all requests to the engine
     generators = []
     for i in range(batch_size):
-        request_id = f"req_{i}"
-        # vLLM takes prompt_token_ids
-        gen = engine.generate({"prompt_token_ids": prompt_ids[i]}, sampling_params, request_id)
+        gen = engine.generate({"prompt_token_ids": prompt_ids_list[i]}, sampling_params, f"req_{i}")
         generators.append(gen)
-
-    # To accurately measure TPOT for a batch, we need to advance all generators concurrently
-    # However, for rigorous TPOT tracking vs Context Length, a single sequence is the cleanest.
-    # If batch_size > 1, the engine will batch them internally if they arrive together.
-    
-    step_records = []
-    
-    if batch_size == 1:
-        gen = generators[0]
-        step = 0
         
-        # Start timing for the very first token (Prefill phase)
-        last_time = time.perf_counter()
-        
-        async for request_output in gen:
-            current_time = time.perf_counter()
-            latency_ms = (current_time - last_time) * 1000.0
+    tasks = [consume_stream(g, context_len) for g in generators]
+    
+    if profile:
+        log.info("Starting Torch Profiler...")
+        with torch.profiler.profile(
+            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=False
+        ) as prof:
+            all_records = await asyncio.gather(*tasks)
             
-            # RequestOutput contains the full generated text/tokens so far
-            # The number of output tokens is len(request_output.outputs[0].token_ids)
-            output_tokens_count = len(request_output.outputs[0].token_ids)
-            current_ctx_len = context_len + output_tokens_count
-            
-            if step == 0:
-                prefill_latency = latency_ms
-                log.info(f"Prefill Latency (Context={context_len}): {prefill_latency:.2f} ms")
-            
-            if step >= 1: # Record decoding steps
-                step_records.append({
-                    "step": step,
-                    "effective_context_length": current_ctx_len,
-                    "latency_ms": latency_ms
-                })
-                
-            last_time = current_time
-            step += 1
-            
-            if step % 500 == 0:
-                log.info(f"Generated {step} tokens... Current TPOT: {latency_ms:.2f} ms")
-                
-        return step_records, prefill_latency
+        log.info("Saving profiler traces...")
+        prof.export_chrome_trace("results_tpot_vllm/kernel_trace_vllm.json")
+        with open("results_tpot_vllm/profiler_summary_vllm.txt", "w") as f:
+            f.write(prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=30))
     else:
-        log.error("Batch sizes > 1 with async streaming requires parallel event loops. For this experiment, please use BS=1.")
+        all_records = await asyncio.gather(*tasks)
+        
+    # Average the records across the batch
+    if not all_records or not all_records[0]:
         return [], 0.0
+        
+    avg_records = []
+    num_steps = len(all_records[0])
+    for s in range(num_steps):
+        avg_lat = sum(r[s]["latency_ms"] for r in all_records) / batch_size
+        avg_records.append({
+            "step": s,
+            "effective_context_length": all_records[0][s]["effective_context_length"],
+            "latency_ms": avg_lat
+        })
+        
+    prefill_latency = avg_records[0]["latency_ms"]
+    log.info(f"Average Prefill Latency (Context={context_len}): {prefill_latency:.2f} ms")
+    return avg_records, prefill_latency
 
 def main():
     parser = argparse.ArgumentParser(description="GenomeOcean TPOT vs Context Bench (vLLM)")
     parser.add_argument("--csv", type=str, required=True, help="Input CSV (genome_id, seq)")
     parser.add_argument("--model", type=str, required=True, help="HF Model ID")
     parser.add_argument("--outdir", type=str, default="./results_tpot_vllm", help="Base output dir")
-    parser.add_argument("--prompt-len", type=int, default=625, help="Seed prefix length")
-    parser.add_argument("--gen-len", type=int, default=2000, help="Number of new tokens to generate")
+    parser.add_argument("--prompt-len", type=int, default=1024, help="Seed prefix length")
+    parser.add_argument("--gen-len", type=int, default=9216, help="Number of new tokens to generate")
     parser.add_argument("--precision", type=str, default="bf16", help="Precision: bf16 or fp8")
+    parser.add_argument("--batch-size", type=int, default=1, help="Batch size")
+    parser.add_argument("--profile", action="store_true", help="Enable torch.profiler")
     
     args = parser.parse_args()
     
@@ -122,7 +129,7 @@ def main():
     if len(input_ids) < args.prompt_len:
         input_ids += [tokenizer.eos_token_id or 0] * (args.prompt_len - len(input_ids))
         
-    prompt_ids = [input_ids] # Batch size 1
+    prompt_ids_list = [input_ids for _ in range(args.batch_size)]
     
     # Setup vLLM Engine
     kv_cache_dtype = "fp8" if args.precision == "fp8" else "auto"
@@ -134,7 +141,7 @@ def main():
         tensor_parallel_size=1,
         dtype="bfloat16",
         kv_cache_dtype=kv_cache_dtype,
-        enforce_eager=True, # Disable CUDA graphs to get true step-by-step latency without capture overhead
+        enforce_eager=True, # Allows torch.profiler to see the individual attention kernels
         max_model_len=args.prompt_len + args.gen_len + 128
     )
     
@@ -145,13 +152,13 @@ def main():
     
     loop = asyncio.get_event_loop()
     records, prefill_latency = loop.run_until_complete(
-        run_vllm_experiment(engine, prompt_ids, args.gen_len, batch_size=1)
+        run_vllm_experiment(engine, prompt_ids_list, args.gen_len, args.batch_size, args.profile)
     )
     
     # Save Results
     if records:
         df_results = pd.DataFrame(records)
-        df_results["batch_size"] = 1
+        df_results["batch_size"] = args.batch_size
         df_results["precision"] = args.precision
         df_results["model"] = args.model
         
@@ -159,11 +166,11 @@ def main():
         df_results.to_csv(save_path, index=False)
         log.info(f"TPOT vs Context results saved to {save_path}")
         
-        # Save overarching summary to file
         import json
         summary_info = {
             "model": args.model,
             "precision": args.precision,
+            "batch_size": args.batch_size,
             "kv_cache_dtype": kv_cache_dtype,
             "seed_prompt_length": args.prompt_len,
             "generated_tokens": args.gen_len,
@@ -177,13 +184,12 @@ def main():
         log.info("Generating plot...")
         plt.figure(figsize=(10, 6))
         
-        # Exclude step 1 to prevent transition overhead from skewing the y-axis
         plot_df = df_results[df_results['step'] > 1]
         
         plt.plot(plot_df['effective_context_length'], plot_df['latency_ms'], color='tab:red', label='Latency')
         plt.xlabel('Effective Context Length (Tokens)')
         plt.ylabel('Latency Per Token (ms)')
-        plt.title(f'vLLM TPOT vs Context Length\n(Model: {args.model}, KV-Cache: {kv_cache_dtype})')
+        plt.title(f'vLLM TPOT vs Context Length\n(Model: {args.model}, Batch: {args.batch_size}, KV: {kv_cache_dtype})')
         plt.tight_layout()
         plt.savefig(outdir / "tpot_vs_context_vllm.png", dpi=300)
         
