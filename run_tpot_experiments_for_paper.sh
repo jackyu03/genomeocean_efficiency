@@ -5,7 +5,7 @@
 # This script runs the necessary configurations of the TPOT vs Context 
 # experiment to generate the exact data needed for your paper.
 # It runs the GenomeOcean-4B model (the one you used for Protocol B) 
-# across multiple batch sizes to clearly demonstrate how KV cache memory 
+# across multiple configurations to clearly demonstrate how KV cache memory 
 # and computation costs scale.
 
 DATA_CSV="generation_dataset.csv"
@@ -16,7 +16,7 @@ GEN_LEN=2000
 echo "=== Starting TPOT vs Context Experiments for Paper ==="
 
 # 1. Baseline Single-Sequence (Pure compute curve using vLLM)
-echo "Running BF16, Batch Size 1..."
+echo "Running vLLM BF16, Batch Size 1..."
 python run_tpot_vllm_experiment.py \
     --csv "$DATA_CSV" \
     --model "$MODEL" \
@@ -24,8 +24,8 @@ python run_tpot_vllm_experiment.py \
     --gen-len $GEN_LEN \
     --precision bf16
 
-# 4. FP8 Comparison Runs (To directly measure how FP8 KV-Cache helps in vLLM)
-echo "Running FP8, Batch Size 1..."
+# 2. FP8 Comparison Run (To directly measure how FP8 KV-Cache helps in vLLM)
+echo "Running vLLM FP8, Batch Size 1..."
 python run_tpot_vllm_experiment.py \
     --csv "$DATA_CSV" \
     --model "$MODEL" \
@@ -33,7 +33,27 @@ python run_tpot_vllm_experiment.py \
     --gen-len $GEN_LEN \
     --precision fp8
 
-# 5. Kernel Profiling Run (To prove H100 Flash Attention utilization to Rob)
+# 3. Batched Scaling via Native PyTorch
+# (Shows linear KV memory traffic vs quadratic compute)
+echo "Running Native PyTorch BF16, Batch Size 16..."
+python run_tpot_context_experiment.py \
+    --csv "$DATA_CSV" \
+    --model "$MODEL" \
+    --batch-size 16 \
+    --prompt-len $PROMPT_LEN \
+    --gen-len $GEN_LEN \
+    --precision bf16
+
+echo "Running Native PyTorch BF16, Batch Size 32..."
+python run_tpot_context_experiment.py \
+    --csv "$DATA_CSV" \
+    --model "$MODEL" \
+    --batch-size 32 \
+    --prompt-len $PROMPT_LEN \
+    --gen-len $GEN_LEN \
+    --precision bf16
+
+# 4. Kernel Profiling Run (To prove H100 Flash Attention utilization)
 # We use the NATIVE PyTorch script here because vLLM's background scheduler 
 # makes raw kernel Chrome tracing extremely noisy and hard to read.
 echo "Running Profiling Trace (BF16)..."
