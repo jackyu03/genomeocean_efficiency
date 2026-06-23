@@ -109,7 +109,10 @@ def main():
     args = parser.parse_args()
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    outdir = Path(args.outdir) / f"run_vllm_{timestamp}"
+    dir_name = f"run_{args.precision}_bs{args.batch_size}_{timestamp}"
+    if args.profile:
+        dir_name += "_profile"
+    outdir = Path(args.outdir) / dir_name
     outdir.mkdir(parents=True, exist_ok=True)
     
     # Load Data
