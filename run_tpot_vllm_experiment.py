@@ -30,11 +30,9 @@ import torch
 async def consume_stream(gen, context_len):
     step_records = []
     step = 0
-    last_time = time.perf_counter()
     try:
         async for request_output in gen:
             current_time = time.perf_counter()
-            latency_ms = (current_time - last_time) * 1000.0
             
             output_tokens_count = len(request_output.outputs[0].token_ids)
             current_ctx_len = context_len + output_tokens_count
@@ -42,10 +40,9 @@ async def consume_stream(gen, context_len):
             step_records.append({
                 "step": step,
                 "effective_context_length": current_ctx_len,
-                "latency_ms": latency_ms
+                "timestamp": current_time
             })
                 
-            last_time = current_time
             step += 1
     except Exception as e:
         log.warning(f"Stream interrupted at step {step} (likely OOM). Partial data retained. Error: {str(e)}")
@@ -56,13 +53,13 @@ async def run_vllm_experiment(engine, prompt_ids_list, gen_len, batch_size, outd
     context_len = len(prompt_ids_list[0])
     log.info(f"Starting vLLM generation: Batch Size = {batch_size}, Prefix = {context_len}, Gen = {gen_len}")
     
+    start_time = time.perf_counter()
     generators = []
     for i in range(batch_size):
         gen = engine.generate({"prompt_token_ids": prompt_ids_list[i]}, sampling_params, f"req_rep{rep_idx}_{i}")
         generators.append(gen)
         
     tasks = [consume_stream(g, context_len) for g in generators]
-    
     if profile:
         log.info("Starting Torch Profiler...")
         with torch.profiler.profile(
@@ -80,23 +77,33 @@ async def run_vllm_experiment(engine, prompt_ids_list, gen_len, batch_size, outd
     else:
         all_records = await asyncio.gather(*tasks)
         
-    # Average the records across the batch
+    # Calculate System-Level TPOT (Global Batch Latency)
     if not all_records or not all_records[0]:
         return [], 0.0
         
-    avg_records = []
-    num_steps = len(all_records[0])
+    sys_records = []
+    # Find minimum steps achieved to handle cases where sequences dropped out due to OOM
+    num_steps = min(len(r) for r in all_records)
+    
     for s in range(num_steps):
-        avg_lat = sum(r[s]["latency_ms"] for r in all_records) / batch_size
-        avg_records.append({
+        max_ts = max(r[s]["timestamp"] for r in all_records)
+        
+        if s == 0:
+            sys_tpot = (max_ts - start_time) * 1000.0
+        else:
+            prev_max_ts = max(r[s-1]["timestamp"] for r in all_records)
+            sys_tpot = (max_ts - prev_max_ts) * 1000.0
+            
+        sys_records.append({
             "step": s,
             "effective_context_length": all_records[0][s]["effective_context_length"],
-            "latency_ms": avg_lat
+            "latency_ms": sys_tpot,
+            "timestamp": max_ts  # pass through to allow writing raw data if needed
         })
         
-    prefill_latency = avg_records[0]["latency_ms"]
+    prefill_latency = sys_records[0]["latency_ms"]
     log.info(f"Average Prefill Latency (Context={context_len}): {prefill_latency:.2f} ms")
-    return avg_records, prefill_latency
+    return sys_records, prefill_latency
 
 def main():
     parser = argparse.ArgumentParser(description="GenomeOcean TPOT vs Context Bench (vLLM)")
@@ -177,7 +184,7 @@ def main():
             df_rep["repeat"] = rep
             
             save_path = outdir / f"tpot_context_latency_rep{rep}.csv"
-            df_rep.to_csv(save_path, index=False)
+            df_rep.drop(columns=["timestamp"], errors="ignore").to_csv(save_path, index=False)
             all_repeats_dfs.append(df_rep)
             log.info(f"Saved repeat {rep} to {save_path}")
             
