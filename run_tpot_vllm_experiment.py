@@ -31,21 +31,24 @@ async def consume_stream(gen, context_len):
     step_records = []
     step = 0
     last_time = time.perf_counter()
-    async for request_output in gen:
-        current_time = time.perf_counter()
-        latency_ms = (current_time - last_time) * 1000.0
-        
-        output_tokens_count = len(request_output.outputs[0].token_ids)
-        current_ctx_len = context_len + output_tokens_count
-        
-        step_records.append({
-            "step": step,
-            "effective_context_length": current_ctx_len,
-            "latency_ms": latency_ms
-        })
+    try:
+        async for request_output in gen:
+            current_time = time.perf_counter()
+            latency_ms = (current_time - last_time) * 1000.0
             
-        last_time = current_time
-        step += 1
+            output_tokens_count = len(request_output.outputs[0].token_ids)
+            current_ctx_len = context_len + output_tokens_count
+            
+            step_records.append({
+                "step": step,
+                "effective_context_length": current_ctx_len,
+                "latency_ms": latency_ms
+            })
+                
+            last_time = current_time
+            step += 1
+    except Exception as e:
+        log.warning(f"Stream interrupted at step {step} (likely OOM). Partial data retained. Error: {str(e)}")
     return step_records
 
 async def run_vllm_experiment(engine, prompt_ids_list, gen_len, batch_size, outdir, profile=False, rep_idx=1):
@@ -157,9 +160,13 @@ def main():
     
     for rep in range(1, args.repeats + 1):
         log.info(f"--- Starting Repeat {rep}/{args.repeats} ---")
-        records, prefill_latency = loop.run_until_complete(
-            run_vllm_experiment(engine, prompt_ids_list, args.gen_len, args.batch_size, outdir, args.profile, rep)
-        )
+        try:
+            records, prefill_latency = loop.run_until_complete(
+                run_vllm_experiment(engine, prompt_ids_list, args.gen_len, args.batch_size, outdir, args.profile, rep)
+            )
+        except Exception as e:
+            log.warning(f"Engine failed at repeat {rep} (likely OOM). Stopping repeats. Exception: {str(e)}")
+            break
         
         if records:
             prefill_latencies.append(prefill_latency)
