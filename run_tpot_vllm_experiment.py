@@ -176,7 +176,11 @@ def main():
         # Plot
         log.info("Generating plot...")
         plt.figure(figsize=(10, 6))
-        plt.plot(df_results['effective_context_length'], df_results['latency_ms'], color='tab:red', label='Latency')
+        
+        # Exclude step 1 to prevent transition overhead from skewing the y-axis
+        plot_df = df_results[df_results['step'] > 1]
+        
+        plt.plot(plot_df['effective_context_length'], plot_df['latency_ms'], color='tab:red', label='Latency')
         plt.xlabel('Effective Context Length (Tokens)')
         plt.ylabel('Latency Per Token (ms)')
         plt.title(f'vLLM TPOT vs Context Length\n(Model: {args.model}, KV-Cache: {kv_cache_dtype})')

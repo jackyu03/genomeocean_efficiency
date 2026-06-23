@@ -274,20 +274,23 @@ def main():
         log.info("Sample Latencies (Last 5):")
         print(df_results.tail())
         
-        # Generate Plot
-        log.info("Generating plot...")
+        # Generate plot
+        log.info("Generating plots...")
         fig, ax1 = plt.subplots(figsize=(10, 6))
+
+        # Exclude step 1 to prevent CUDA warmup overhead from skewing the y-axis
+        plot_df = df_results[df_results['step'] > 1]
 
         color = 'tab:red'
         ax1.set_xlabel('Effective Context Length (Tokens)')
         ax1.set_ylabel('Latency Per Token (ms)', color=color)
-        ax1.plot(df_results['effective_context_length'], df_results['latency_ms'], color=color, label='Latency')
+        ax1.plot(plot_df['effective_context_length'], plot_df['latency_ms'], color=color)
         ax1.tick_params(axis='y', labelcolor=color)
 
-        ax2 = ax1.twinx()
+        ax2 = ax1.twinx()  
         color = 'tab:blue'
-        ax2.set_ylabel('VRAM Allocated (MB)', color=color)
-        ax2.plot(df_results['effective_context_length'], df_results['vram_mb'], color=color, linestyle='--', label='VRAM')
+        ax2.set_ylabel('VRAM Allocated (MB)', color=color)  
+        ax2.plot(plot_df['effective_context_length'], plot_df['vram_mb'], color=color)
         ax2.tick_params(axis='y', labelcolor=color)
 
         fig.tight_layout()
